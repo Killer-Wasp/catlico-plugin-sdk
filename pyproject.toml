@@ -9,6 +9,9 @@ dependencies = [
     "httpx>=0.27",
 ]
 
+[project.scripts]
+catlico-plugin = "catlico_plugin_sdk.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.0",
