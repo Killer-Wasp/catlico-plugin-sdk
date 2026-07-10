@@ -1,4 +1,5 @@
 """Tests for the ``catlico-plugin`` CLI and the manifest schema it validates."""
+import ast
 import io
 import json
 import shutil
@@ -8,10 +9,13 @@ import pytest
 
 from catlico_plugin_sdk.cli import main, run_command, validate_command
 from catlico_plugin_sdk.manifest import (
+    PERMISSIONS,
     load_manifest,
     manifest_warnings,
     validate_manifest,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "demo_plugin"
 
@@ -106,12 +110,7 @@ def test_unrecognised_type_is_warning_not_error():
 
 
 def test_real_abuseipdb_manifest_validates():
-    real = (
-        Path(__file__).resolve().parents[2]
-        / "catlico-plugins"
-        / "abuseipdb"
-        / "catlico-plugin.toml"
-    )
+    real = REPO_ROOT / "catlico-plugins" / "abuseipdb" / "catlico-plugin.toml"
     if not real.is_file():
         pytest.skip("abuseipdb plugin not present in this checkout")
     manifest = load_manifest(real)
@@ -243,6 +242,104 @@ def test_run_command_succeeds_despite_unrecognised_type(tmp_path):
     assert code == 0  # a warning must never abort the run
     assert "warning" in text
     assert "status: success" in text
+
+
+def test_run_command_malformed_manifest(tmp_path):
+    plugin_dir = tmp_path / "plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "catlico-plugin.toml").write_text("id = broken = nope\n")
+    event = _write_event(tmp_path, {"observable_type": "ip", "data": "1.2.3.4"})
+    out = io.StringIO()
+    code = run_command(str(plugin_dir), event, out=out)
+    assert code == 1
+    assert "error: could not parse" in out.getvalue()
+
+
+def test_run_command_malformed_config(tmp_path):
+    event = _write_event(tmp_path, {"observable_type": "ip", "data": "1.2.3.4"})
+    bad_config = tmp_path / "config.json"
+    bad_config.write_text("{not valid json")
+    out = io.StringIO()
+    code = run_command(str(FIXTURE), event, config_path=str(bad_config), out=out)
+    assert code == 1
+    assert "error: could not load config/secrets fixture" in out.getvalue()
+
+
+def test_run_command_missing_config_file(tmp_path):
+    event = _write_event(tmp_path, {"observable_type": "ip", "data": "1.2.3.4"})
+    out = io.StringIO()
+    code = run_command(
+        str(FIXTURE), event, config_path=str(tmp_path / "nope.json"), out=out
+    )
+    assert code == 1
+    assert "error: could not load config/secrets fixture" in out.getvalue()
+
+
+# --- Drift guards: the SDK duplicates production's permission model (it cannot
+# import the API/runner), so pin the copies to their sources. Skip cleanly when
+# the sibling repos are not checked out, so the SDK stays independently testable.
+
+
+def test_permissions_match_runner_installer():
+    installer = REPO_ROOT / "catlico-plugin-runner" / "plugin_runner" / "installer.py"
+    if not installer.is_file():
+        pytest.skip("catlico-plugin-runner not present in this checkout")
+    allowed = _literal_assignment(installer, "_ALLOWED_PERMISSIONS")
+    assert set(PERMISSIONS) == set(allowed), (
+        "manifest.PERMISSIONS has drifted from the runner installer's "
+        "_ALLOWED_PERMISSIONS"
+    )
+
+
+def test_runtime_gated_permissions_are_known_to_the_sdk():
+    runtime = (
+        REPO_ROOT
+        / "catlico-api"
+        / "app"
+        / "api"
+        / "internal"
+        / "routes"
+        / "plugin_runtime.py"
+    )
+    if not runtime.is_file():
+        pytest.skip("catlico-api not present in this checkout")
+    gated = _gated_permissions(runtime)
+    assert gated, "expected to find _require/_require_any calls in plugin_runtime.py"
+    unknown = gated - set(PERMISSIONS)
+    assert not unknown, (
+        f"plugin_runtime.py gates permissions the SDK fake does not know: {unknown}"
+    )
+
+
+def _literal_assignment(path: Path, name: str):
+    """Extract a module-level literal assignment (e.g. a set of strings) via AST,
+    without importing the sibling package (it may not be installed here)."""
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == name for t in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"{name} not found in {path}")
+
+
+def _gated_permissions(path: Path) -> set[str]:
+    """All permission strings passed to _require()/_require_any() in a module."""
+    tree = ast.parse(path.read_text())
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            continue
+        if node.func.id not in ("_require", "_require_any"):
+            continue
+        for arg in node.args[1:]:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                found.add(arg.value)
+            elif isinstance(arg, (ast.Set, ast.List, ast.Tuple)):
+                for elt in arg.elts:
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                        found.add(elt.value)
+    return found
 
 
 # --- argv entrypoint ---

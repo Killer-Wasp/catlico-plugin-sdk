@@ -90,6 +90,10 @@ def _load_plugin(manifest: dict, directory: Path):
     source = _source_path(directory)
     if source not in sys.path:
         sys.path.insert(0, source)
+    # importlib caches by module name: if a module of this name is already
+    # imported (e.g. a copy of the same plugin under a different path), the cached
+    # one is returned. Harmless for a one-shot CLI process; a trap for a test that
+    # runs two same-named plugin copies in one interpreter.
     module = importlib.import_module(module_name)
     return getattr(module, class_name)()
 
@@ -168,7 +172,11 @@ def run_command(
         print(f"error: no {MANIFEST_FILENAME} found at {manifest_path}", file=out)
         return 1
 
-    manifest = load_manifest(manifest_path)
+    try:
+        manifest = load_manifest(manifest_path)
+    except Exception as exc:  # noqa: BLE001 — malformed TOML is a load failure
+        print(f"error: could not parse {manifest_path}: {exc}", file=out)
+        return 1
     for warning in manifest_warnings(manifest):
         print(f"warning: {warning}", file=out)
     errors = validate_manifest(manifest)
@@ -185,9 +193,13 @@ def run_command(
         print(f"error: could not load event from {event_path}: {exc}", file=out)
         return 1
 
-    config = manifest_defaults(manifest)
-    config.update(_load_json(config_path))
-    secrets = _load_json(secrets_path)
+    try:
+        config = manifest_defaults(manifest)
+        config.update(_load_json(config_path))
+        secrets = _load_json(secrets_path)
+    except (OSError, ValueError) as exc:
+        print(f"error: could not load config/secrets fixture: {exc}", file=out)
+        return 1
 
     try:
         plugin = _load_plugin(manifest, directory)
@@ -265,8 +277,7 @@ def main(argv: list[str] | None = None) -> int:
             config_path=args.config,
             secrets_path=args.secrets,
         )
-    parser.error(f"unknown command: {args.command}")
-    return 2
+    parser.error(f"unknown command: {args.command}")  # raises SystemExit
 
 
 if __name__ == "__main__":

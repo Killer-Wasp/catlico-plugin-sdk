@@ -99,6 +99,8 @@ class FakeCatlicoApi:
         self.uploaded_files: list[dict] = []
         self.progress_updates: list[dict] = []
         self.permission_denials: list[PermissionDenied] = []
+        # fingerprint -> result id, for the run-scoped dedup the runtime enforces.
+        self._result_ids: dict[str, str] = {}
 
     # --- Permission enforcement (mirrors runtime _require / _require_any) ---
 
@@ -145,11 +147,20 @@ class FakeCatlicoApi:
         self._require_any(
             "add_result", {"write:plugin_result", "write:observable_enrichment"}
         )
-        if not body.get("fingerprint"):
-            raise ValueError("add_result requires a fingerprint (idempotency key)")
+        # The runtime requires entity_type/entity_id (subscripted directly) and a
+        # truthy fingerprint (422 otherwise), then dedups on fingerprint per run.
+        for field in ("entity_type", "entity_id", "fingerprint"):
+            if not body.get(field):
+                raise ValueError(f"add_result requires '{field}'")
+        fingerprint = body["fingerprint"]
+        existing = self._result_ids.get(fingerprint)
+        if existing is not None:
+            return {"id": existing, "created": False}
         record = {"kind": "result", **body}
         self.results.append(record)
-        return {"id": f"fake-result-{len(self.results)}", "created": True}
+        result_id = f"fake-result-{len(self.results)}"
+        self._result_ids[fingerprint] = result_id
+        return {"id": result_id, "created": True}
 
     async def add_observable_enrichment(
         self, observable_id: str, *, source: str, data: dict, **body

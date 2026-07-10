@@ -123,6 +123,41 @@ async def test_add_result_requires_fingerprint():
         await ctx.api.add_result(entity_type="case", entity_id="1")
 
 
+async def test_add_result_requires_entity_fields():
+    ctx = FakeContext(manifest={"permissions": ["write:plugin_result"]})
+    with pytest.raises(ValueError, match="entity_type"):
+        await ctx.api.add_result(entity_id="1", fingerprint="fp")
+    with pytest.raises(ValueError, match="entity_id"):
+        await ctx.api.add_result(entity_type="case", fingerprint="fp")
+
+
+async def test_add_result_dedups_on_fingerprint():
+    ctx = FakeContext(manifest={"permissions": ["write:plugin_result"]})
+    first = await ctx.api.add_result(
+        entity_type="observable", entity_id="o1", fingerprint="fp-1"
+    )
+    second = await ctx.api.add_result(
+        entity_type="observable", entity_id="o1", fingerprint="fp-1", verdict="info"
+    )
+    assert first["created"] is True
+    assert second["created"] is False
+    assert second["id"] == first["id"]
+    assert len(ctx.results) == 1  # the repeat did not create a second result
+
+
+async def test_add_result_or_permission_via_enrichment_only():
+    # The OR half of _require_any: write:observable_enrichment alone must permit
+    # add_result and upload_file, exactly as the runtime allows.
+    ctx = FakeContext(manifest={"permissions": ["write:observable_enrichment"]})
+    out = await ctx.api.add_result(
+        entity_type="observable", entity_id="o1", fingerprint="fp-x"
+    )
+    assert out["created"] is True
+    uploaded = await ctx.api.upload_file(b"bytes", "f.bin")
+    assert uploaded["file_ref"].startswith("plugin-run-file:")
+    ctx.assert_no_permission_violations()
+
+
 # --- Reads ---
 
 
