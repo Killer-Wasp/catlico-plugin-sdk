@@ -1,12 +1,17 @@
 """Tests for the ``catlico-plugin`` CLI and the manifest schema it validates."""
 import io
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 
 from catlico_plugin_sdk.cli import main, run_command, validate_command
-from catlico_plugin_sdk.manifest import validate_manifest
+from catlico_plugin_sdk.manifest import (
+    load_manifest,
+    manifest_warnings,
+    validate_manifest,
+)
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "demo_plugin"
 
@@ -57,14 +62,60 @@ def test_bad_config_parameter_reported():
             "triggers": ["t"],
             "configuration": [
                 {"type": "string"},  # missing name
-                {"name": "k", "type": "mystery"},  # bad type
+                {"name": "k", "type": "string", "choices": "nope"},  # bad choices
                 {"name": "k", "type": "string"},  # duplicate name
             ],
         }
     )
     assert any("missing required field: name" in e for e in errors)
-    assert any("unknown type" in e for e in errors)
+    assert any("choices must be an array" in e for e in errors)
     assert any("duplicate" in e for e in errors)
+
+
+def _base_manifest(**config) -> dict:
+    return {
+        "id": "x",
+        "version": "1.0.0",
+        "entrypoint": "x.plugin:X",
+        "triggers": ["observable.created"],
+        "configuration": [config] if config else [],
+    }
+
+
+def test_secret_type_validates_cleanly():
+    # `type = "secret"` is a valid way to mark a secret (Catlico API's
+    # _is_secret_param accepts it) — no errors and no warnings.
+    manifest = _base_manifest(name="key", type="secret", required=True)
+    assert validate_manifest(manifest) == []
+    assert manifest_warnings(manifest) == []
+
+
+def test_secret_boolean_still_validates_cleanly():
+    # Regression: the `secret = true` boolean convention must keep working.
+    manifest = _base_manifest(name="key", type="string", secret=True, required=True)
+    assert validate_manifest(manifest) == []
+    assert manifest_warnings(manifest) == []
+
+
+def test_unrecognised_type_is_warning_not_error():
+    manifest = _base_manifest(name="k", type="weird")
+    # Production treats `type` as freeform, so an odd type never fails the manifest.
+    assert validate_manifest(manifest) == []
+    warnings = manifest_warnings(manifest)
+    assert any("unrecognised type 'weird'" in w for w in warnings)
+
+
+def test_real_abuseipdb_manifest_validates():
+    real = (
+        Path(__file__).resolve().parents[2]
+        / "catlico-plugins"
+        / "abuseipdb"
+        / "catlico-plugin.toml"
+    )
+    if not real.is_file():
+        pytest.skip("abuseipdb plugin not present in this checkout")
+    manifest = load_manifest(real)
+    assert validate_manifest(manifest) == []
 
 
 # --- validate command ---
@@ -146,6 +197,52 @@ def test_run_command_reports_plugin_failure(tmp_path):
     assert code == 1
     assert "status: failure" in text
     assert "error_kind: input" in text
+
+
+def _fixture_copy_with_config(tmp_path: Path, extra_config_toml: str) -> Path:
+    """A copy of the demo fixture with an extra `[[configuration]]` block appended."""
+    plugin_dir = tmp_path / "plugin"
+    shutil.copytree(FIXTURE, plugin_dir)
+    manifest = plugin_dir / "catlico-plugin.toml"
+    manifest.write_text(manifest.read_text() + "\n" + extra_config_toml)
+    return plugin_dir
+
+
+def test_validate_command_warns_but_succeeds(tmp_path):
+    plugin_dir = _fixture_copy_with_config(
+        tmp_path, '[[configuration]]\nname = "odd"\ntype = "weird"\n'
+    )
+    out = io.StringIO()
+    code = validate_command(str(plugin_dir), out=out)
+    text = out.getvalue()
+    assert code == 0  # unrecognised type does not fail validation
+    assert "warning" in text
+    assert "unrecognised type 'weird'" in text
+    assert "valid" in text
+
+
+def test_run_command_succeeds_with_secret_type(tmp_path):
+    plugin_dir = _fixture_copy_with_config(
+        tmp_path, '[[configuration]]\nname = "token"\ntype = "secret"\nsecret = true\n'
+    )
+    event = _write_event(tmp_path, {"observable_type": "ip", "data": "1.2.3.4"})
+    out = io.StringIO()
+    code = run_command(str(plugin_dir), event, out=out)
+    assert code == 0
+    assert "status: success" in out.getvalue()
+
+
+def test_run_command_succeeds_despite_unrecognised_type(tmp_path):
+    plugin_dir = _fixture_copy_with_config(
+        tmp_path, '[[configuration]]\nname = "odd"\ntype = "weird"\n'
+    )
+    event = _write_event(tmp_path, {"observable_type": "ip", "data": "1.2.3.4"})
+    out = io.StringIO()
+    code = run_command(str(plugin_dir), event, out=out)
+    text = out.getvalue()
+    assert code == 0  # a warning must never abort the run
+    assert "warning" in text
+    assert "status: success" in text
 
 
 # --- argv entrypoint ---

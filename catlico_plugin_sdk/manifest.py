@@ -33,9 +33,14 @@ PERMISSIONS: frozenset[str] = frozenset(
     }
 )
 
-#: Config parameter ``type`` values the schema recognises.
+#: Config parameter ``type`` values the schema recognises. Includes ``secret``
+#: (an alternative to the ``secret = true`` boolean — the Catlico API's
+#: ``_is_secret_param`` accepts both). This is *not* a closed vocabulary:
+#: neither the Catlico API nor the runner installer rejects an unrecognised
+#: ``type``, so the validator only *warns* about types outside this set (see
+#: ``manifest_warnings``) rather than failing a manifest the platform accepts.
 PARAM_TYPES: frozenset[str] = frozenset(
-    {"string", "integer", "float", "boolean", "array", "cron"}
+    {"string", "integer", "float", "boolean", "array", "cron", "secret"}
 )
 
 
@@ -49,14 +54,28 @@ def load_manifest(path: str | Path) -> dict:
 
 
 def validate_manifest(manifest: dict) -> list[str]:
-    """Return a list of human-readable validation errors (empty == valid).
+    """Return the manifest's hard validation errors (empty == valid to ship).
 
-    Checks required top-level fields, the ``module:Class`` entrypoint shape, that
-    at least one trigger is declared, that requested permissions are in the
-    enforced vocabulary, a positive integer timeout, and every
-    ``[[configuration]]`` parameter declaration.
+    Hard errors are only for shapes the Catlico platform rejects: missing
+    required top-level fields, a malformed ``module:Class`` entrypoint, no
+    triggers, a permission outside the enforced vocabulary, a non-positive
+    timeout, and structurally malformed ``[[configuration]]`` declarations.
+    Advisory issues (e.g. an unrecognised config ``type``, which production
+    treats as freeform) are returned by ``manifest_warnings`` and must not fail a
+    manifest the platform would accept.
     """
+    return _check_manifest(manifest)[0]
+
+
+def manifest_warnings(manifest: dict) -> list[str]:
+    """Return non-fatal advisory issues (empty == none). See ``validate_manifest``."""
+    return _check_manifest(manifest)[1]
+
+
+def _check_manifest(manifest: dict) -> tuple[list[str], list[str]]:
     errors: list[str] = []
+    warnings: list[str] = []
+
     for field in ("id", "version", "entrypoint"):
         if not manifest.get(field):
             errors.append(f"missing required field: {field}")
@@ -76,14 +95,16 @@ def validate_manifest(manifest: dict) -> list[str]:
     if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
         errors.append("timeout_seconds must be a positive integer")
 
-    errors.extend(_validate_configuration(manifest.get("configuration", [])))
-    return errors
+    _check_configuration(manifest.get("configuration", []), errors, warnings)
+    return errors, warnings
 
 
-def _validate_configuration(configuration: object) -> list[str]:
-    errors: list[str] = []
+def _check_configuration(
+    configuration: object, errors: list[str], warnings: list[str]
+) -> None:
     if not isinstance(configuration, list):
-        return ["configuration must be an array of parameter tables"]
+        errors.append("configuration must be an array of parameter tables")
+        return
 
     seen: set[str] = set()
     for index, param in enumerate(configuration):
@@ -105,9 +126,11 @@ def _validate_configuration(configuration: object) -> list[str]:
         if not ptype:
             errors.append(f"{where} missing required field: type")
         elif ptype not in PARAM_TYPES:
-            errors.append(
-                f"{where} has unknown type '{ptype}' "
-                f"(allowed: {sorted(PARAM_TYPES)})"
+            # Production treats ``type`` as freeform, so this is advice, not a
+            # rejection — flag the likely typo without failing the manifest.
+            warnings.append(
+                f"{where} has unrecognised type '{ptype}' "
+                f"(known types: {sorted(PARAM_TYPES)})"
             )
 
         choices = param.get("choices")
@@ -119,8 +142,6 @@ def _validate_configuration(configuration: object) -> list[str]:
                 value = param[bound]
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
                     errors.append(f"{where} {bound} must be a number")
-
-    return errors
 
 
 def manifest_defaults(manifest: dict) -> dict:

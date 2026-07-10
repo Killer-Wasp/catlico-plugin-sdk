@@ -29,6 +29,7 @@ from catlico_plugin_sdk.manifest import (
     MANIFEST_FILENAME,
     load_manifest,
     manifest_defaults,
+    manifest_warnings,
     validate_manifest,
 )
 from catlico_plugin_sdk.models import PluginEvent
@@ -64,6 +65,12 @@ def validate_command(path: str, *, out: TextIO = sys.stdout) -> int:
     except Exception as exc:  # noqa: BLE001 — malformed TOML is a validation failure
         print(f"error: could not parse {manifest_path}: {exc}", file=out)
         return 1
+
+    warnings = manifest_warnings(manifest)
+    if warnings:
+        print(f"{manifest_path}: {len(warnings)} warning(s)", file=out)
+        for warning in warnings:
+            print(f"  - warning: {warning}", file=out)
 
     errors = validate_manifest(manifest)
     if errors:
@@ -162,6 +169,8 @@ def run_command(
         return 1
 
     manifest = load_manifest(manifest_path)
+    for warning in manifest_warnings(manifest):
+        print(f"warning: {warning}", file=out)
     errors = validate_manifest(manifest)
     if errors:
         print("error: manifest is invalid — fix it before running:", file=out)
