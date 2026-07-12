@@ -66,11 +66,16 @@ catlico-plugin-sdk = { path = "../../catlico-plugin-sdk" }
 ## The dev loop
 
 ```bash
+cd catlico-plugins                                        # scaffold alongside the other plugins
 catlico-plugin new my-plugin                              # scaffold a fresh plugin tree
 catlico-plugin validate ./my-plugin                       # offline manifest check
 catlico-plugin run ./my-plugin --event event.json         # drive a run locally
 uv run pytest                                             # your tests, with the offline fake
 ```
+
+> Run `new` from inside `catlico-plugins/` (or another dir two levels below the workspace
+> root): the generated `pyproject.toml` pins the SDK at `../../catlico-plugin-sdk`, so the
+> plugin must sit two dirs below the root next to `catlico-plugin-sdk`.
 
 > `new` and `validate` are fully offline. `run` fakes the Catlico API but wires a **real**
 > HTTP client — vendor calls go out over the live network. See [docs/cli.md](docs/cli.md).

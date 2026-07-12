@@ -232,6 +232,73 @@ def test_new_command_name_override_flows_into_manifest(tmp_path):
     assert manifest["name"] == "My Cool Plugin"
 
 
+def _parse_generated_sources(plugin_dir: Path, package: str) -> None:
+    """ast.parse every generated .py so a splicing bug is a hard failure."""
+    for rel in (
+        f"src/{package}/plugin.py",
+        f"src/{package}/__init__.py",
+        "tests/test_plugin.py",
+    ):
+        ast.parse((plugin_dir / rel).read_text())
+
+
+def test_new_command_generated_sources_are_parseable(tmp_path):
+    # Belt-and-suspenders even on the happy path: the generated Python must parse.
+    code = new_command("my-cool-plugin", parent_dir=str(tmp_path))
+    assert code == 0
+    _parse_generated_sources(tmp_path / "my-cool-plugin", "my_cool_plugin_plugin")
+
+
+def test_new_command_name_with_quotes_produces_parseable_source(tmp_path):
+    # A display name with a double quote must not break the generated plugin.py —
+    # display_name is embedded via repr, not spliced raw.
+    out = io.StringIO()
+    code = new_command(
+        "my-cool-plugin",
+        parent_dir=str(tmp_path),
+        name='My "Cool" Plugin',
+        out=out,
+    )
+    assert code == 0
+    plugin_dir = tmp_path / "my-cool-plugin"
+    _parse_generated_sources(plugin_dir, "my_cool_plugin_plugin")
+    # And the manifest still round-trips (TOML string escaping holds too).
+    manifest = load_manifest(plugin_dir / "catlico-plugin.toml")
+    assert manifest["name"] == 'My "Cool" Plugin'
+    assert validate_manifest(manifest) == []
+
+
+def test_new_command_rejects_invalid_class(tmp_path):
+    out = io.StringIO()
+    code = new_command(
+        "my-cool-plugin", parent_dir=str(tmp_path), class_name="123 Not Valid!", out=out
+    )
+    assert code == 1
+    assert "invalid class name" in out.getvalue()
+    # Nothing written on the failed run.
+    assert not (tmp_path / "my-cool-plugin").exists()
+
+
+def test_new_command_rejects_keyword_class(tmp_path):
+    out = io.StringIO()
+    code = new_command(
+        "my-cool-plugin", parent_dir=str(tmp_path), class_name="class", out=out
+    )
+    assert code == 1
+    assert "invalid class name" in out.getvalue()
+
+
+def test_new_command_target_exists_as_file(tmp_path):
+    # A regular file at the target path must be a clean exit 1, not a traceback
+    # from iterdir() raising NotADirectoryError.
+    (tmp_path / "taken").write_text("i am a file")
+    out = io.StringIO()
+    code = new_command("taken", parent_dir=str(tmp_path), out=out)
+    assert code == 1
+    assert "already exists as a file" in out.getvalue()
+    assert (tmp_path / "taken").read_text() == "i am a file"
+
+
 def test_new_command_scaffolded_plugin_is_importable_and_runnable(tmp_path):
     """The generated plugin.py actually subclasses CatlicoPlugin correctly and
     process() runs against a FakeContext — not just that the files exist."""

@@ -34,6 +34,11 @@ The generated manifest passes `validate_manifest` with no errors and `manifest_w
 no warnings out of the box; the generated `plugin.py` is a minimal, runnable `CatlicoPlugin`
 subclass with clear `TODO`s where you plug in real logic.
 
+> **Where to run it.** The generated `pyproject.toml` pins the SDK at
+> `../../catlico-plugin-sdk`, so scaffold from inside `catlico-plugins/` (or another directory
+> two levels below the workspace root, next to `catlico-plugin-sdk`) for that path dependency
+> to resolve. `--class` must be a valid Python identifier (and not a reserved keyword).
+
 | Exit code | When |
 |---|---|
 | `0` | plugin tree created |
