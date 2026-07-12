@@ -26,6 +26,26 @@ def _load_request() -> dict:
     return json.loads(sys.stdin.read() or "{}")
 
 
+def _load_secrets(request: dict) -> dict:
+    """Resolve the run's secrets.
+
+    Container mode delivers secrets out-of-band: the runner writes them to a
+    read-only bind-mounted file and passes its in-container path as
+    ``secrets_path``. Subprocess (trusted-local) mode still sends them in-band as
+    ``secrets`` in the stdin payload. Prefer ``secrets_path`` when present; fall
+    back to in-band ``secrets`` otherwise.
+
+    A ``secrets_path`` that is set but missing/unreadable/malformed raises here
+    (surfacing as a clear harness failure) rather than silently running the
+    plugin with no secrets.
+    """
+    secrets_path = request.get("secrets_path")
+    if secrets_path:
+        with open(secrets_path) as fh:
+            return json.load(fh)
+    return request.get("secrets", {})
+
+
 async def _run(request: dict) -> dict:
     run_id = request.get("run_id", "")
     plugin_path = request.get("plugin_path")
@@ -59,7 +79,7 @@ async def _run(request: dict) -> dict:
         api=api,
         http=PluginHttp(),
         config=request.get("config", {}),
-        secrets=request.get("secrets", {}),
+        secrets=_load_secrets(request),
     )
 
     try:
