@@ -16,7 +16,7 @@ type = "string"
 required = false
 defaultValue = "brackets"
 choices = ["brackets", "hxxp"]
-description = "Defang style: 'brackets' -> 1[.]2[.]3[.]4 and hxxp[://]...; 'hxxp' -> http replaced with hxxp (https with hxxps) plus bracketed dots."
+description = "Defang style: 'brackets' keeps the scheme but brackets '://' and every dot (http://evil.example -> http[://]evil[.]example, 1.2.3.4 -> 1[.]2[.]3[.]4); 'hxxp' renames http->hxxp / https->hxxps and brackets dots but leaves '://' intact (https://evil.example -> hxxps://evil[.]example)."
 
 [[configuration]]
 name = "annotate_private_ranges"

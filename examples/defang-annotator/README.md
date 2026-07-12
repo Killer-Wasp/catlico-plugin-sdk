@@ -79,9 +79,16 @@ uv run catlico-plugin run examples/defang-annotator \
 cd examples/defang-annotator && uv run pytest
 ```
 
-or from the SDK repo root — `tests/test_plugin.py` here is collected as part of the full suite
-(`uv run pytest` from the repo root). Tests use `catlico_plugin_sdk.testing.FakeContext` and
-`observable_event`; no network, no live Catlico API.
+Run these tests explicitly — a bare `uv run pytest` at the SDK repo root does **not** pick them
+up (the root suite's `testpaths` is scoped to `tests/`, and each example plugin has its own
+`src/` on pythonpath). From the repo root, point pytest at this directory instead:
+
+```bash
+uv run pytest examples/defang-annotator/tests
+```
+
+Tests use `catlico_plugin_sdk.testing.FakeContext` and `observable_event`; no network, no live
+Catlico API.
 
 ## See also
 

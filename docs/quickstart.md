@@ -121,7 +121,7 @@ class MyFirstPluginPlugin(CatlicoPlugin):
 ```
 
 **The two boundaries** — the whole point of the SDK (full detail:
-[writing-a-plugin.md](writing-a-plugin.md#two-boundaries-both-enforced)):
+[writing-a-plugin.md](writing-a-plugin.md#where-a-plugin-runs)):
 
 - **`ctx.api`** — reads/writes Catlico entities (cases, alerts, observables). **Permission
   checked** against the manifest; a call outside your declared permissions is rejected (403 in
