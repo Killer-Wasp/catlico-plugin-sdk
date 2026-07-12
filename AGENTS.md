@@ -35,9 +35,18 @@ catlico_plugin_sdk/
   models.py     # PluginEvent, PluginContext
   api.py        # PluginApiClient (ctx.api), PluginHttp (ctx.http)
   manifest.py   # manifest schema authority: PERMISSIONS, validate/warnings
-  cli.py        # `catlico-plugin validate` and `catlico-plugin run`
+  cli.py        # `catlico-plugin new`, `validate`, and `run`
+  scaffold.py   # `new` subcommand's plugin-tree generator (id/package/class derivation + templates)
   testing.py    # FakeContext test kit — deliberately NOT re-exported
   _worker.py    # sandbox entrypoint the runner invokes
+docs/
+  quickstart.md        # 15-minute guided walkthrough (new -> edit -> validate -> run -> test)
+  writing-a-plugin.md  # the full authoring contract
+  manifest.md           # catlico-plugin.toml schema
+  testing.md             # the FakeContext test kit
+  cli.md                  # new / validate / run in full
+examples/
+  defang-annotator/     # a finished, runnable, offline example plugin (see its README)
 ```
 
 ## The authoring contract
@@ -145,7 +154,10 @@ uv run pytest
 
 - `catlico-plugin-runner/AGENTS.md` — the sandbox that executes this contract
 - `catlico-plugins/AGENTS.md` — the plugin authoring guide and reference plugin
-- `docs/` — the full reference: `writing-a-plugin.md`, `manifest.md`, `testing.md`, `cli.md`
+- `docs/quickstart.md` — the 15-minute guided walkthrough; `docs/` also has the full reference:
+  `writing-a-plugin.md`, `manifest.md`, `testing.md`, `cli.md`
+- `examples/defang-annotator/` — a finished, runnable, fully offline example plugin, generated
+  via `catlico-plugin new` and referenced by the quickstart
 
 When documentation and code disagree, treat the code and tests as the source of truth,
 then update the stale doc.

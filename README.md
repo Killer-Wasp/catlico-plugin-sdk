@@ -63,6 +63,14 @@ dependencies = ["catlico-plugin-sdk"]
 catlico-plugin-sdk = { path = "../../catlico-plugin-sdk" }
 ```
 
+## New to this? Start here
+
+[**docs/quickstart.md**](docs/quickstart.md) — a timed, copy-paste-able 15-minute walkthrough
+from an empty directory to a working, tested plugin. It builds toward
+[`examples/defang-annotator`](examples/defang-annotator) — a small, fully offline example
+plugin (no vendor call, no secrets) that defangs IP/domain/URL observables for safe reporting.
+Read its code and README as a finished, runnable reference.
+
 ## The dev loop
 
 ```bash
@@ -84,10 +92,12 @@ uv run pytest                                             # your tests, with the
 
 | Doc | What's in it |
 |---|---|
+| [Quickstart](docs/quickstart.md) | 15-minute guided walkthrough: `new` → edit → `validate` → `run` → test |
 | [Writing a plugin](docs/writing-a-plugin.md) | The base class, the event, `ctx.api` / `ctx.http`, error handling |
 | [The manifest](docs/manifest.md) | `catlico-plugin.toml` schema, the permission vocabulary, config parameters |
 | [Testing](docs/testing.md) | `FakeContext`, event factories, `fake_http`, permission assertions |
 | [The CLI](docs/cli.md) | `new`, `validate`, and `run`, exit codes, event fixtures |
+| [examples/defang-annotator](examples/defang-annotator) | A finished, runnable example plugin — fully offline, no vendor calls |
 
 Contributors and AI agents: [`AGENTS.md`](AGENTS.md).
 

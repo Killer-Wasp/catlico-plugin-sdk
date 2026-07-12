@@ -1,0 +1,26 @@
+id = "defang-annotator"
+name = "Defang Annotator"
+version = "0.1.0"
+description = "Defang an IP/domain/URL observable for safe reporting and flag private/reserved IP ranges. Fully offline — no vendor calls, no secrets."
+sdk = ">=0.1,<1"
+runtime = "python"
+entrypoint = "defang_annotator_plugin.plugin:DefangAnnotatorPlugin"
+capabilities = ["enrichment"]
+triggers = ["observable.created"]
+permissions = ["read:observable", "write:observable_enrichment"]
+timeout_seconds = 30
+
+[[configuration]]
+name = "style"
+type = "string"
+required = false
+defaultValue = "brackets"
+choices = ["brackets", "hxxp"]
+description = "Defang style: 'brackets' -> 1[.]2[.]3[.]4 and hxxp[://]...; 'hxxp' -> http replaced with hxxp (https with hxxps) plus bracketed dots."
+
+[[configuration]]
+name = "annotate_private_ranges"
+type = "boolean"
+required = false
+defaultValue = true
+description = "For IP observables, flag loopback/link-local/private (RFC1918)/reserved/multicast ranges in the enrichment summary."

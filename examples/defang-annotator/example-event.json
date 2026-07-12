@@ -1,0 +1,7 @@
+{
+  "event_id": "audit:example-1",
+  "event_type": "observable.created",
+  "organisation_id": "org-example",
+  "object": { "type": "observable", "id": "obs-example-1" },
+  "data": { "observable_type": "ip", "data": "192.168.1.1", "tlp": 2, "pap": 2 }
+}

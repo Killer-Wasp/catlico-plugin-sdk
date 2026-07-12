@@ -1,0 +1,8 @@
+FROM python:3.14-slim
+RUN useradd --uid 65534 --no-create-home nobodyplugin || true
+WORKDIR /plugin
+COPY . /plugin
+RUN pip install --no-cache-dir /plugin/.catlico-sdk && rm -rf /plugin/.catlico-sdk
+RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
+ENV PYTHONPATH=/plugin/src:/plugin
+USER 65534:65534

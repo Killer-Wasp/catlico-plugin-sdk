@@ -3,6 +3,9 @@
 __pycache__/
 *.py[cod]
 
+# Example plugins are libraries, not deployed apps — don't commit their lock
+# files, matching catlico-plugins' convention for plugin repos.
+examples/*/uv.lock
 
 # Local environment
 .env
