@@ -1,7 +1,10 @@
 """``catlico-plugin`` command-line interface.
 
-Two subcommands, both offline (no live Catlico API, no runner):
+Three subcommands, all offline (no live Catlico API, no runner):
 
+* ``catlico-plugin new PLUGIN_ID [--dir DIR] [--name NAME] [--class CLASS]`` —
+  scaffold a fresh, valid plugin directory tree so authors don't have to
+  hand-copy an existing plugin.
 * ``catlico-plugin validate [PATH]`` — validate a plugin's ``catlico-plugin.toml``
   manifest: schema, required fields, and config parameter declarations.
 * ``catlico-plugin run --event EVENT.json [PATH]`` — execute a plugin locally
@@ -34,12 +37,39 @@ from catlico_plugin_sdk.manifest import (
 )
 from catlico_plugin_sdk.models import PluginEvent
 from catlico_plugin_sdk.plugin import PluginRuntimeError
+from catlico_plugin_sdk.scaffold import scaffold_plugin
 from catlico_plugin_sdk.testing import FakeContext
 
 
 def _plugin_dir(path: str | Path) -> Path:
     p = Path(path)
     return p.parent if p.is_file() else p
+
+
+def new_command(
+    plugin_id: str,
+    *,
+    parent_dir: str = ".",
+    name: str | None = None,
+    class_name: str | None = None,
+    out: TextIO = sys.stdout,
+) -> int:
+    """Scaffold a fresh plugin directory tree. Returns a process exit code."""
+    try:
+        target = scaffold_plugin(plugin_id, parent_dir, name=name, class_name=class_name)
+    except (ValueError, FileExistsError) as exc:
+        print(f"error: {exc}", file=out)
+        return 1
+
+    print(f"created {target}", file=out)
+    print("next steps:", file=out)
+    print(f"  catlico-plugin validate {target}", file=out)
+    print(
+        f"  catlico-plugin run {target} --event event.json  "
+        "# see docs/cli.md for the envelope shape",
+        file=out,
+    )
+    return 0
 
 
 def _source_path(directory: Path) -> str:
@@ -231,6 +261,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    p_new = sub.add_parser(
+        "new", help="scaffold a fresh plugin directory tree"
+    )
+    p_new.add_argument(
+        "plugin_id",
+        help="plugin id, e.g. 'my-plugin' — becomes the directory name",
+    )
+    p_new.add_argument(
+        "--dir",
+        dest="dir",
+        default=".",
+        help="parent directory to create the plugin in (default: current directory)",
+    )
+    p_new.add_argument(
+        "--name",
+        dest="name",
+        help="display name for the manifest (default: the plugin id)",
+    )
+    p_new.add_argument(
+        "--class",
+        dest="class_name",
+        help="plugin class name (default: derived from the plugin id)",
+    )
+
     p_validate = sub.add_parser(
         "validate", help="validate a plugin's catlico-plugin.toml manifest"
     )
@@ -268,6 +322,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "new":
+        return new_command(
+            args.plugin_id,
+            parent_dir=args.dir,
+            name=args.name,
+            class_name=args.class_name,
+        )
     if args.command == "validate":
         return validate_command(args.path)
     if args.command == "run":

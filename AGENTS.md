@@ -100,9 +100,12 @@ platform would accept.
 
 ## CLI
 
-Installed as the `catlico-plugin` script. **Exactly two subcommands** — there is no
-scaffolding/`new` command.
+Installed as the `catlico-plugin` script. **Three subcommands**: `new`, `validate`, `run`.
 
+- `new <plugin-id> [--dir DIR] [--name NAME] [--class CLASS]` — scaffolds a fresh plugin tree
+  (modeled on `catlico-plugins/abuseipdb`) via `catlico_plugin_sdk/scaffold.py`. Exit `0` on
+  success, `1` for an invalid id or a non-empty existing target directory. The generated
+  manifest round-trips clean through `validate_manifest`/`manifest_warnings` by construction.
 - `validate <path>` — fully offline. Exit `0` on clean or warnings-only, `1` on hard errors.
 - `run <path>` — exit `0` for `success`/`skipped`, `1` for `failure` or a pre-run hard error.
 

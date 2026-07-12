@@ -1,12 +1,43 @@
 # The CLI — `catlico-plugin`
 
-Installed as the `catlico-plugin` script (entry point `catlico_plugin_sdk.cli:main`). Exactly
-two subcommands — there is no scaffolding/`new` command; to start a plugin, copy an existing
-one.
+Installed as the `catlico-plugin` script (entry point `catlico_plugin_sdk.cli:main`). Three
+subcommands: `new`, `validate`, and `run` — all offline (no live Catlico API, no runner),
+though `run` wires a real HTTP client for vendor calls (see below).
 
-> **Network behaviour differs between the two.** `validate` is fully offline. `run` fakes the
-> Catlico API (`ctx.api`) and never touches a runner, **but it wires a real `PluginHttp`** —
-> your plugin's `ctx.http` vendor calls go out over the live network.
+> **Network behaviour differs across subcommands.** `new` and `validate` are fully offline.
+> `run` fakes the Catlico API (`ctx.api`) and never touches a runner, **but it wires a real
+> `PluginHttp`** — your plugin's `ctx.http` vendor calls go out over the live network.
+
+## `catlico-plugin new PLUGIN_ID [--dir DIR] [--name NAME] [--class CLASS]`
+
+Scaffolds a fresh, valid plugin directory tree at `DIR/PLUGIN_ID/` (default `DIR` is the
+current directory) — the same shape as `catlico-plugins/abuseipdb`: `catlico-plugin.toml`,
+`pyproject.toml`, `Dockerfile.catlico`, `src/<pkg>/{__init__.py,plugin.py}`, and a starter
+`tests/test_plugin.py`. Refuses to run if the target directory already exists and is
+non-empty.
+
+```
+$ catlico-plugin new my-cool-plugin
+created ./my-cool-plugin
+next steps:
+  catlico-plugin validate ./my-cool-plugin
+  catlico-plugin run ./my-cool-plugin --event event.json  # see docs/cli.md for the envelope shape
+```
+
+The Python package name is derived from `PLUGIN_ID` (hyphens/invalid identifier characters
+become underscores, then `_plugin` is appended): `my-cool-plugin` → `my_cool_plugin_plugin`,
+matching `abuseipdb` → `abuseipdb_plugin`. The plugin class name defaults to a CamelCase
+derivation of the id (`my-cool-plugin` → `MyCoolPluginPlugin`) — override with `--class`.
+`--name` sets the manifest's display `name` (default: the plugin id).
+
+The generated manifest passes `validate_manifest` with no errors and `manifest_warnings` with
+no warnings out of the box; the generated `plugin.py` is a minimal, runnable `CatlicoPlugin`
+subclass with clear `TODO`s where you plug in real logic.
+
+| Exit code | When |
+|---|---|
+| `0` | plugin tree created |
+| `1` | invalid plugin id, or the target directory exists and is non-empty |
 
 ## `catlico-plugin validate [PATH]`
 

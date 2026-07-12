@@ -66,13 +66,14 @@ catlico-plugin-sdk = { path = "../../catlico-plugin-sdk" }
 ## The dev loop
 
 ```bash
-catlico-plugin validate ./my-plugin                      # offline manifest check
-catlico-plugin run ./my-plugin --event event.json        # drive a run locally
-uv run pytest                                            # your tests, with the offline fake
+catlico-plugin new my-plugin                              # scaffold a fresh plugin tree
+catlico-plugin validate ./my-plugin                       # offline manifest check
+catlico-plugin run ./my-plugin --event event.json         # drive a run locally
+uv run pytest                                             # your tests, with the offline fake
 ```
 
-> `validate` is fully offline. `run` fakes the Catlico API but wires a **real** HTTP client —
-> vendor calls go out over the live network. See [docs/cli.md](docs/cli.md).
+> `new` and `validate` are fully offline. `run` fakes the Catlico API but wires a **real**
+> HTTP client — vendor calls go out over the live network. See [docs/cli.md](docs/cli.md).
 
 ## Documentation
 
@@ -81,7 +82,7 @@ uv run pytest                                            # your tests, with the 
 | [Writing a plugin](docs/writing-a-plugin.md) | The base class, the event, `ctx.api` / `ctx.http`, error handling |
 | [The manifest](docs/manifest.md) | `catlico-plugin.toml` schema, the permission vocabulary, config parameters |
 | [Testing](docs/testing.md) | `FakeContext`, event factories, `fake_http`, permission assertions |
-| [The CLI](docs/cli.md) | `validate` and `run`, exit codes, event fixtures |
+| [The CLI](docs/cli.md) | `new`, `validate`, and `run`, exit codes, event fixtures |
 
 Contributors and AI agents: [`AGENTS.md`](AGENTS.md).
 

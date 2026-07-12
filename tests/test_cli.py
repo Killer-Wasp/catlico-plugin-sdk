@@ -7,13 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from catlico_plugin_sdk.cli import main, run_command, validate_command
+from catlico_plugin_sdk.cli import main, new_command, run_command, validate_command
 from catlico_plugin_sdk.manifest import (
     PERMISSIONS,
     load_manifest,
     manifest_warnings,
     validate_manifest,
 )
+from catlico_plugin_sdk.scaffold import derive_class_name, derive_package_name
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -115,6 +116,151 @@ def test_real_abuseipdb_manifest_validates():
         pytest.skip("abuseipdb plugin not present in this checkout")
     manifest = load_manifest(real)
     assert validate_manifest(manifest) == []
+
+
+# --- new command / scaffold ---
+
+
+def test_derive_package_name_simple_id():
+    assert derive_package_name("abuseipdb") == "abuseipdb_plugin"
+
+
+def test_derive_package_name_hyphenated_id():
+    assert derive_package_name("my-cool-plugin") == "my_cool_plugin_plugin"
+
+
+def test_derive_class_name_simple_id():
+    assert derive_class_name("abuseipdb") == "AbuseipdbPlugin"
+
+
+def test_derive_class_name_hyphenated_id():
+    assert derive_class_name("my-cool-plugin") == "MyCoolPluginPlugin"
+
+
+def test_new_command_generates_expected_file_tree(tmp_path):
+    out = io.StringIO()
+    code = new_command("my-cool-plugin", parent_dir=str(tmp_path), out=out)
+    assert code == 0
+
+    target = tmp_path / "my-cool-plugin"
+    assert target.is_dir()
+    expected = {
+        "catlico-plugin.toml",
+        "pyproject.toml",
+        "Dockerfile.catlico",
+        "src/my_cool_plugin_plugin/__init__.py",
+        "src/my_cool_plugin_plugin/plugin.py",
+        "tests/test_plugin.py",
+    }
+    actual = {
+        str(p.relative_to(target)) for p in target.rglob("*") if p.is_file()
+    }
+    assert expected <= actual
+    assert "created" in out.getvalue()
+
+
+def test_new_command_manifest_round_trips_clean(tmp_path):
+    new_command("my-cool-plugin", parent_dir=str(tmp_path))
+    manifest_path = tmp_path / "my-cool-plugin" / "catlico-plugin.toml"
+    manifest = load_manifest(manifest_path)
+
+    assert manifest["id"] == "my-cool-plugin"
+    assert manifest["entrypoint"] == "my_cool_plugin_plugin.plugin:MyCoolPluginPlugin"
+    assert set(manifest["permissions"]) <= PERMISSIONS
+    assert validate_manifest(manifest) == []
+    assert manifest_warnings(manifest) == []
+
+
+def test_new_command_default_id_manifest_round_trips_clean():
+    # Also exercise the non-hyphenated (abuseipdb-shaped) id path.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        new_command("simpleid", parent_dir=d)
+        manifest = load_manifest(Path(d) / "simpleid" / "catlico-plugin.toml")
+        assert manifest["entrypoint"] == "simpleid_plugin.plugin:SimpleidPlugin"
+        assert validate_manifest(manifest) == []
+        assert manifest_warnings(manifest) == []
+
+
+def test_new_command_refuses_nonempty_existing_dir(tmp_path):
+    target = tmp_path / "taken"
+    target.mkdir()
+    (target / "existing.txt").write_text("hi")
+
+    out = io.StringIO()
+    code = new_command("taken", parent_dir=str(tmp_path), out=out)
+    assert code == 1
+    assert "already exists" in out.getvalue()
+    # Original file untouched, no scaffold files written alongside it.
+    assert (target / "existing.txt").read_text() == "hi"
+    assert not (target / "catlico-plugin.toml").exists()
+
+
+def test_new_command_allows_empty_existing_dir(tmp_path):
+    target = tmp_path / "empty-target"
+    target.mkdir()
+    out = io.StringIO()
+    code = new_command("empty-target", parent_dir=str(tmp_path), out=out)
+    assert code == 0
+    assert (target / "catlico-plugin.toml").is_file()
+
+
+def test_new_command_class_override(tmp_path):
+    new_command(
+        "my-cool-plugin", parent_dir=str(tmp_path), class_name="TotallyCustomPlugin"
+    )
+    manifest_path = tmp_path / "my-cool-plugin" / "catlico-plugin.toml"
+    manifest = load_manifest(manifest_path)
+    assert manifest["entrypoint"] == "my_cool_plugin_plugin.plugin:TotallyCustomPlugin"
+
+    plugin_py = (
+        tmp_path / "my-cool-plugin" / "src" / "my_cool_plugin_plugin" / "plugin.py"
+    ).read_text()
+    assert "class TotallyCustomPlugin(CatlicoPlugin):" in plugin_py
+
+    init_py = (
+        tmp_path / "my-cool-plugin" / "src" / "my_cool_plugin_plugin" / "__init__.py"
+    ).read_text()
+    assert "TotallyCustomPlugin" in init_py
+
+
+def test_new_command_name_override_flows_into_manifest(tmp_path):
+    new_command("my-cool-plugin", parent_dir=str(tmp_path), name="My Cool Plugin")
+    manifest_path = tmp_path / "my-cool-plugin" / "catlico-plugin.toml"
+    manifest = load_manifest(manifest_path)
+    assert manifest["name"] == "My Cool Plugin"
+
+
+def test_new_command_scaffolded_plugin_is_importable_and_runnable(tmp_path):
+    """The generated plugin.py actually subclasses CatlicoPlugin correctly and
+    process() runs against a FakeContext — not just that the files exist."""
+    import sys
+
+    new_command("scaffold-check", parent_dir=str(tmp_path))
+    plugin_dir = tmp_path / "scaffold-check"
+    src = str(plugin_dir / "src")
+    sys.path.insert(0, src)
+    try:
+        module = __import__("scaffold_check_plugin.plugin", fromlist=["ScaffoldCheckPlugin"])
+        plugin_cls = module.ScaffoldCheckPlugin
+        from catlico_plugin_sdk.testing import FakeContext, observable_event
+
+        ctx = FakeContext(permissions={"read:observable", "write:observable_enrichment"})
+        import asyncio
+
+        asyncio.run(plugin_cls().process(observable_event(data="1.2.3.4"), ctx))
+        assert ctx.results
+        assert ctx.results[0]["source"] == "scaffold-check"
+    finally:
+        sys.path.remove(src)
+        sys.modules.pop("scaffold_check_plugin.plugin", None)
+        sys.modules.pop("scaffold_check_plugin", None)
+
+
+def test_main_new_returns_zero(tmp_path):
+    assert main(["new", "argv-plugin", "--dir", str(tmp_path)]) == 0
+    assert (tmp_path / "argv-plugin" / "catlico-plugin.toml").is_file()
 
 
 # --- validate command ---
