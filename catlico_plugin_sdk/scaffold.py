@@ -22,11 +22,14 @@ _ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
 _DOCKERFILE = """\
 FROM python:3.14-slim
+COPY --from=ghcr.io/astral-sh/uv:0.11.7 /uv /bin/uv
 RUN useradd --uid 65534 --no-create-home nobodyplugin || true
 WORKDIR /plugin
 COPY . /plugin
 RUN pip install --no-cache-dir /plugin/.catlico-sdk && rm -rf /plugin/.catlico-sdk
-RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
+RUN uv export --frozen --no-dev --no-emit-project --no-emit-package catlico-plugin-sdk --no-hashes -o /tmp/deps.txt \\
+ && uv pip install --system --no-cache -r /tmp/deps.txt \\
+ && rm -f /tmp/deps.txt
 ENV PYTHONPATH=/plugin/src:/plugin
 USER 65534:65534
 """
