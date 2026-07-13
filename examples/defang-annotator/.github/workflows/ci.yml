@@ -1,0 +1,37 @@
+name: CI
+
+# Manifest validation, lint, and tests for a Catlico plugin.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      # Installed from git until catlico-plugin-sdk is published to an index; the
+      # `[tool.uv.sources]` override in pyproject.toml is for local `uv` dev only
+      # and is ignored by pip, so it does not affect this job.
+      - name: Install the Catlico plugin SDK
+        run: pip install "catlico-plugin-sdk @ git+https://github.com/Killer-Wasp/catlico-plugin-sdk"
+
+      - name: Install the plugin (with dev/test dependencies)
+        run: pip install -e ".[dev]"
+
+      - name: Validate the manifest
+        run: catlico-plugin validate .
+
+      - name: Lint
+        run: |
+          pip install ruff
+          ruff check .
+
+      - name: Test
+        run: pytest

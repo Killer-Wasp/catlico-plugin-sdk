@@ -12,9 +12,10 @@ though `run` wires a real HTTP client for vendor calls (see below).
 
 Scaffolds a fresh, valid plugin directory tree at `DIR/PLUGIN_ID/` (default `DIR` is the
 current directory) — the same shape as `catlico-plugins/abuseipdb`: `catlico-plugin.toml`,
-`pyproject.toml`, `Dockerfile.catlico`, `src/<pkg>/{__init__.py,plugin.py}`, and a starter
-`tests/test_plugin.py`. Refuses to run if the target directory already exists and is
-non-empty.
+`pyproject.toml`, `Dockerfile.catlico`, `src/<pkg>/{__init__.py,plugin.py}`, a starter
+`tests/test_plugin.py`, and a `.github/workflows/ci.yml` that runs `catlico-plugin validate`,
+`ruff`, and `pytest` on every push and pull request. Refuses to run if the target directory
+already exists and is non-empty.
 
 ```
 $ catlico-plugin new my-cool-plugin

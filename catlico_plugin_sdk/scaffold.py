@@ -34,6 +34,55 @@ ENV PYTHONPATH=/plugin/src:/plugin
 USER 65534:65534
 """
 
+#: GitHub Actions CI for a generated plugin: the same three gates the runner's
+#: install pipeline applies (``catlico-plugin validate``), plus a lint and the
+#: plugin's own tests. So install-from-ref then fails only for environmental
+#: reasons, not for plugin bugs a push could have caught.
+#:
+#: The SDK is installed from git because a standalone plugin repo has no sibling
+#: SDK checkout (the ``[tool.uv.sources]`` path override in pyproject.toml is a
+#: local-``uv`` convenience that pip ignores). Once the SDK is published to an
+#: index, this step can drop away and ``pip install .[dev]`` resolves it directly.
+_CI_WORKFLOW = """\
+name: CI
+
+# Manifest validation, lint, and tests for a Catlico plugin.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      # Installed from git until catlico-plugin-sdk is published to an index; the
+      # `[tool.uv.sources]` override in pyproject.toml is for local `uv` dev only
+      # and is ignored by pip, so it does not affect this job.
+      - name: Install the Catlico plugin SDK
+        run: pip install "catlico-plugin-sdk @ git+https://github.com/Killer-Wasp/catlico-plugin-sdk"
+
+      - name: Install the plugin (with dev/test dependencies)
+        run: pip install -e ".[dev]"
+
+      - name: Validate the manifest
+        run: catlico-plugin validate .
+
+      - name: Lint
+        run: |
+          pip install ruff
+          ruff check .
+
+      - name: Test
+        run: pytest
+"""
+
 
 def derive_package_name(plugin_id: str) -> str:
     """``<plugin-id>`` -> the importable package name ``<pkg>_plugin``.
@@ -109,12 +158,15 @@ def scaffold_plugin(
     src_dir = target / "src" / package
     src_dir.mkdir(parents=True, exist_ok=True)
     (target / "tests").mkdir(parents=True, exist_ok=True)
+    workflows_dir = target / ".github" / "workflows"
+    workflows_dir.mkdir(parents=True, exist_ok=True)
 
     (target / "catlico-plugin.toml").write_text(
         _manifest_toml(plugin_id, display_name, package, cls)
     )
     (target / "pyproject.toml").write_text(_pyproject_toml(plugin_id, package, display_name))
     (target / "Dockerfile.catlico").write_text(_DOCKERFILE)
+    (workflows_dir / "ci.yml").write_text(_CI_WORKFLOW)
     (src_dir / "__init__.py").write_text(_init_py(package, cls))
     (src_dir / "plugin.py").write_text(_plugin_py(display_name, cls))
     (target / "tests" / "test_plugin.py").write_text(_test_py(package, cls, display_name))

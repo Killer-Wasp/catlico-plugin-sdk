@@ -148,6 +148,7 @@ def test_new_command_generates_expected_file_tree(tmp_path):
         "catlico-plugin.toml",
         "pyproject.toml",
         "Dockerfile.catlico",
+        ".github/workflows/ci.yml",
         "src/my_cool_plugin_plugin/__init__.py",
         "src/my_cool_plugin_plugin/plugin.py",
         "tests/test_plugin.py",
@@ -157,6 +158,16 @@ def test_new_command_generates_expected_file_tree(tmp_path):
     }
     assert expected <= actual
     assert "created" in out.getvalue()
+
+
+def test_new_command_ci_workflow_runs_the_three_gates(tmp_path):
+    """The scaffolded CI workflow validates the manifest, lints, and tests —
+    the same gates the runner's install pipeline applies, minus environment."""
+    new_command("my-cool-plugin", parent_dir=str(tmp_path))
+    ci = (tmp_path / "my-cool-plugin" / ".github" / "workflows" / "ci.yml").read_text()
+    assert "catlico-plugin validate ." in ci
+    assert "ruff check ." in ci
+    assert "pytest" in ci
 
 
 def test_new_command_manifest_round_trips_clean(tmp_path):

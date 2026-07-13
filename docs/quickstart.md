@@ -69,12 +69,18 @@ my-first-plugin/
   catlico-plugin.toml           # the manifest: identity, triggers, permissions, config
   pyproject.toml                # the [tool.uv.sources] path from step 0
   Dockerfile.catlico             # how the runner packages this plugin (not needed today)
+  .github/workflows/ci.yml      # validate + lint + pytest on every push/PR
   src/my_first_plugin_plugin/
     __init__.py
     plugin.py                   # the plugin class
   tests/
     test_plugin.py              # a starter FakeContext test
 ```
+
+The generated `ci.yml` runs the same manifest check the runner's install pipeline runs
+(`catlico-plugin validate`), plus `ruff` and your tests — so a push fails for real bugs, not
+surprises at install time. It installs the SDK from git for now; once the SDK is published to an
+index you can delete that step (the comment in the file says so).
 
 **The manifest** (`catlico-plugin.toml`) declares, among other things:
 
