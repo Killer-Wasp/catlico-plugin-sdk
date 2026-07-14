@@ -3,6 +3,7 @@ name = "catlico-plugin-sdk"
 version = "0.1.0"
 description = "Plugin SDK for catlico-plugin-runner: the Plugin base class, event models, and runtime context."
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.14"
 dependencies = [
     "pydantic>=2.11",

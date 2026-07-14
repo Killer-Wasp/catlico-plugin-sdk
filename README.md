@@ -3,7 +3,7 @@
 **The authoring kit for [Catlico](https://github.com/jimmyruann/catlico-backend) plugins —
 base class, runtime context, manifest validator, offline test kit, and CLI.**
 
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/)
 
 A Catlico plugin is a small Python package that reacts to platform events — an observable was
@@ -133,4 +133,4 @@ the API's runtime enforcement. **Changing it is a three-repo change.**
 
 ## License
 
-[GNU Affero General Public License v3.0](LICENSE).
+[MIT License](LICENSE).
