@@ -68,19 +68,18 @@ next steps:
 my-first-plugin/
   catlico-plugin.toml           # the manifest: identity, triggers, permissions, config
   pyproject.toml                # the [tool.uv.sources] path from step 0
-  Dockerfile.catlico             # how the runner packages this plugin (not needed today)
-  .github/workflows/ci.yml      # validate + lint + pytest on every push/PR
+  main.py                       # the Catlico app + @catlico.event / @catlico.health
+  .github/workflows/ci.yml      # uv sync --frozen + pytest + validate on every push/PR
   src/my_first_plugin_plugin/
     __init__.py
-    plugin.py                   # the plugin class
+    plugin.py                   # your logic as plain async functions
   tests/
     test_plugin.py              # a starter FakeContext test
 ```
 
-The generated `ci.yml` runs the same manifest check the runner's install pipeline runs
-(`catlico-plugin validate`), plus `ruff` and your tests — so a push fails for real bugs, not
-surprises at install time. It installs the SDK from git for now; once the SDK is published to an
-index you can delete that step (the comment in the file says so).
+The generated `ci.yml` runs the same gates the runner does — `uv sync --frozen` (the committed
+lock resolves), your tests, and `catlico-plugin validate` (manifest + triggers/handlers
+agreement) — so a push fails for real bugs, not surprises at install time.
 
 **The manifest** (`catlico-plugin.toml`) declares, among other things:
 
@@ -102,28 +101,39 @@ runtime (and the offline test kit) reject anything else. `[[configuration]]` ent
 `ctx.config` (or `ctx.secrets` if `secret = true`) — see
 [manifest.md](manifest.md#configuration-parameters).
 
-**The plugin class** (`src/my_first_plugin_plugin/plugin.py`) is a minimal, already-runnable
-`CatlicoPlugin` subclass:
+**The app** (`main.py`) wires events to your logic — this is the entrypoint the runner imports
+(`entrypoint = "main:catlico"`):
 
 ```python
-class MyFirstPluginPlugin(CatlicoPlugin):
-    triggers = ["observable.created"]
+from catlico_plugin_sdk import Catlico
 
-    async def health(self, ctx) -> dict:
-        return {"ok": True}
+from my_first_plugin_plugin import plugin
 
-    async def should_process(self, event, ctx) -> bool:
-        return event.event_type in self.triggers
+catlico = Catlico()
 
-    async def process(self, event, ctx) -> None:
-        value = (event.data.get("data") or "").strip()
-        if not value:
-            raise InputError("observable has no value")
-        await ctx.api.add_observable_enrichment(
-            event.object_id, source="my-first-plugin",
-            data={"value": value}, verdict="info",
-            summary="my-first-plugin" + f" processed {value}",
-        )
+
+@catlico.event("observable.created")
+async def on_observable_created(event, ctx):
+    await plugin.process(event, ctx)
+
+
+@catlico.health()
+async def health(ctx):
+    return await plugin.health(ctx)
+```
+
+**Your logic** (`src/my_first_plugin_plugin/plugin.py`) is plain, directly-testable functions:
+
+```python
+async def process(event, ctx) -> None:
+    value = (event.data.get("data") or "").strip()
+    if not value:
+        raise InputError("observable has no value")
+    await ctx.api.add_observable_enrichment(
+        event.object_id, source="my-first-plugin",
+        data={"value": value}, verdict="info",
+        summary="my-first-plugin" + f" processed {value}",
+    )
 ```
 
 **The two boundaries** — the whole point of the SDK (full detail:
@@ -138,11 +148,12 @@ class MyFirstPluginPlugin(CatlicoPlugin):
   ([`examples/defang-annotator`](../examples/defang-annotator)) doesn't either, deliberately, so
   it runs with no network. `catlico-plugins/abuseipdb` is the reference for a plugin that does.
 
-## 3. Edit `process()` to do something real (5 min)
+## 3. Edit your logic to do something real (5 min)
 
-Replace the stub in `src/my_first_plugin_plugin/plugin.py` with something that actually reads
-the observable, uses a config value, reports progress, and produces a real (if simple) verdict —
-mirroring [`examples/defang-annotator`](../examples/defang-annotator/src/defang_annotator_plugin/plugin.py).
+Replace the stub `process()` in `src/my_first_plugin_plugin/plugin.py` with something that
+actually reads the observable, uses a config value, reports progress, and produces a real (if
+simple) verdict — mirroring
+[`examples/defang-annotator`](../examples/defang-annotator/src/defang_annotator_plugin/plugin.py).
 Here's a trimmed version — annotate an IP observable with whether it's a private/reserved
 address:
 
@@ -151,49 +162,50 @@ from __future__ import annotations
 
 import ipaddress
 
-from catlico_plugin_sdk import CatlicoPlugin
 from catlico_plugin_sdk.plugin import InputError
 
 
-class MyFirstPluginPlugin(CatlicoPlugin):
-    triggers = ["observable.created"]
+async def process(event, ctx) -> None:
+    value = (event.data.get("data") or "").strip()
+    if not value:
+        raise InputError("observable has no value")
 
-    async def should_process(self, event, ctx) -> bool:
-        return (
-            event.event_type in self.triggers
-            and event.data.get("observable_type") == "ip"
-        )
+    await ctx.progress(f"checking {value}", percent=50)
 
-    async def process(self, event, ctx) -> None:
-        value = (event.data.get("data") or "").strip()
-        if not value:
-            raise InputError("observable has no value")
+    # a config value from catlico-plugin.toml's [[configuration]], e.g. rename
+    # `threshold` -> a `flag_private` boolean, or just read what's already there:
+    verbose = bool(ctx.config.get("threshold", 50) > 0)
 
-        await ctx.progress(f"checking {value}", percent=50)
+    addr = ipaddress.ip_address(value)
+    is_private = addr.is_private or addr.is_loopback or addr.is_link_local
+    verdict = "safe" if is_private else "info"
+    summary = f"{value} is {'private/reserved' if is_private else 'a public address'}"
 
-        # a config value from catlico-plugin.toml's [[configuration]], e.g. rename
-        # `threshold` -> a `flag_private` boolean, or just read what's already there:
-        verbose = bool(ctx.config.get("threshold", 50) > 0)
+    await ctx.api.add_observable_enrichment(
+        event.object_id,
+        source="my-first-plugin",
+        data={"value": value, "is_private": is_private, "verbose": verbose},
+        verdict=verdict,
+        summary=summary,
+    )
+```
 
-        addr = ipaddress.ip_address(value)
-        is_private = addr.is_private or addr.is_loopback or addr.is_link_local
-        verdict = "safe" if is_private else "info"
-        summary = f"{value} is {'private/reserved' if is_private else 'a public address'}"
+To run only for IP observables, add a matcher to the decorator in `main.py`:
 
-        await ctx.api.add_observable_enrichment(
-            event.object_id,
-            source="my-first-plugin",
-            data={"value": value, "is_private": is_private, "verbose": verbose},
-            verdict=verdict,
-            summary=summary,
-        )
+```python
+@catlico.event(
+    "observable.created",
+    matchers=[lambda e: e.data.get("observable_type") == "ip"],
+)
+async def on_observable_created(event, ctx):
+    await plugin.process(event, ctx)
 ```
 
 This is deliberately close to `defang-annotator`'s `private_range_note` helper — worth reading
 side by side. Note the error model in play: `InputError` for a malformed/empty event (not
-retried), and you'd reach for `ConfigError` if a config value like `style` came back invalid
-(see the example's `health()`/`process()` for that pattern) — full table in
-[writing-a-plugin.md](writing-a-plugin.md#error-handling).
+retried), and you'd reach for `ConfigError` if a config value came back invalid (see the
+example's `health()`/`process()`), or `SkipRun(reason)` to skip an event after inspecting it —
+full table in [writing-a-plugin.md](writing-a-plugin.md#error-handling).
 
 ## 4. Validate (1 min)
 
@@ -248,17 +260,21 @@ Replace `tests/test_plugin.py`:
 ```python
 from catlico_plugin_sdk.testing import FakeContext, observable_event
 
-from my_first_plugin_plugin.plugin import MyFirstPluginPlugin
+from my_first_plugin_plugin import plugin
 
 
 async def test_flags_a_private_ip():
     ctx = FakeContext(permissions={"read:observable", "write:observable_enrichment"})
-    await MyFirstPluginPlugin().process(observable_event(data="192.168.1.1"), ctx)
+    await plugin.process(observable_event(data="192.168.1.1"), ctx)
 
     assert ctx.results[0]["data"]["is_private"] is True
     assert ctx.results[0]["verdict"] == "safe"
     ctx.assert_no_permission_violations()
 ```
+
+You can also drive the whole app (matchers + dispatch) end-to-end with
+`catlico_plugin_sdk.testing.run_app(catlico, event, ctx)`, which returns the run's result dict
+(`status`, `skip_reason`, `error_kind`) exactly as the runner would see it.
 
 ```bash
 cd my-first-plugin && uv run pytest
@@ -276,7 +292,7 @@ tour: [testing.md](testing.md).
 ## Where to go next
 
 - [`examples/defang-annotator`](../examples/defang-annotator) — the finished, richer version of
-  what you just built: two config parameters, both error kinds, `should_process` filtering by
+  what you just built: two config parameters, both error kinds, matcher-based filtering by
   observable type, and a fuller test suite. Its README also has the full explanation of the
   `[tool.uv.sources]` path quirk from step 0/1.
 - [writing-a-plugin.md](writing-a-plugin.md) — the complete authoring contract

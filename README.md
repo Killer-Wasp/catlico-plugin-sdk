@@ -1,42 +1,43 @@
 # Catlico Plugin SDK
 
 **The authoring kit for [Catlico](https://github.com/jimmyruann/catlico-backend) plugins —
-base class, runtime context, manifest validator, offline test kit, and CLI.**
+the `Catlico` decorator app, runtime context, manifest validator, offline test kit, and CLI.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/)
 
-A Catlico plugin is a small Python package that reacts to platform events — an observable was
+A Catlico plugin is a small uv project that reacts to platform events — an observable was
 created, a case was opened — and writes back evidence: enrichments, results, proposed case
 edits. You write it against this SDK; the
-[plugin runner](https://github.com/Killer-Wasp/catlico-plugin-runner) executes it in an
-isolated sandbox.
+[plugin runner](https://github.com/Killer-Wasp/catlico-plugin-runner) provisions it as a
+per-plugin venv and executes each run in a plain child process.
 
 ```python
-from catlico_plugin_sdk import CatlicoPlugin, InputError
+# main.py — entrypoint = "main:catlico"
+from catlico_plugin_sdk import Catlico, InputError
+
+catlico = Catlico()
 
 
-class MyPlugin(CatlicoPlugin):
-    triggers = ["observable.created"]
+@catlico.event("observable.created")
+async def enrich(event, ctx) -> None:
+    ip = (event.data.get("data") or "").strip()
+    if not ip:
+        raise InputError("observable has no IP value")
 
-    async def process(self, event, ctx) -> None:
-        ip = (event.data.get("data") or "").strip()
-        if not ip:
-            raise InputError("observable has no IP value")
+    resp = await ctx.http.get(                        # vendor call — errors auto-classified
+        "https://vendor.example/check", params={"ip": ip},
+        headers={"Key": ctx.secrets["key"]},
+    )
+    score = resp.json()["score"]
 
-        resp = await ctx.http.get(                        # vendor call — errors auto-classified
-            "https://vendor.example/check", params={"ip": ip},
-            headers={"Key": ctx.secrets["key"]},
-        )
-        score = resp.json()["score"]
-
-        await ctx.api.add_observable_enrichment(          # evidence back into Catlico
-            event.object_id,
-            source="MyVendor",
-            data={"score": score},
-            verdict="malicious" if score >= 75 else "safe",
-            summary=f"score {score}",
-        )
+    await ctx.api.add_observable_enrichment(          # evidence back into Catlico
+        event.object_id,
+        source="MyVendor",
+        data={"score": score},
+        verdict="malicious" if score >= 75 else "safe",
+        summary=f"score {score}",
+    )
 ```
 
 ## Two boundaries, both enforced
@@ -93,7 +94,7 @@ uv run pytest                                             # your tests, with the
 | Doc | What's in it |
 |---|---|
 | [Quickstart](docs/quickstart.md) | 15-minute guided walkthrough: `new` → edit → `validate` → `run` → test |
-| [Writing a plugin](docs/writing-a-plugin.md) | The base class, the event, `ctx.api` / `ctx.http`, error handling |
+| [Writing a plugin](docs/writing-a-plugin.md) | The `Catlico` app + decorators, the event, `ctx.api` / `ctx.http`, error handling |
 | [The manifest](docs/manifest.md) | `catlico-plugin.toml` schema, the permission vocabulary, config parameters |
 | [Testing](docs/testing.md) | `FakeContext`, event factories, `fake_http`, permission assertions |
 | [The CLI](docs/cli.md) | `new`, `validate`, and `run`, exit codes, event fixtures |
@@ -128,7 +129,7 @@ uv sync
 uv run pytest
 ```
 
-The permission vocabulary in `manifest.py` is mirrored by the runner's install validator and
+The permission vocabulary in `manifest.py` is mirrored by the runner's registry validator and
 the API's runtime enforcement. **Changing it is a three-repo change.**
 
 ## License

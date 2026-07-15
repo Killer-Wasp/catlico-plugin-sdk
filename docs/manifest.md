@@ -12,7 +12,7 @@ Fields the SDK validator reads (`name` is read by the `validate` CLI for its suc
 |---|---|---|
 | `id` | yes | plugin identifier |
 | `version` | yes | plugin version |
-| `entrypoint` | yes | `"module:Class"` — must contain a `:` |
+| `entrypoint` | yes | `"module:app_object"` — must contain a `:` (e.g. `main:catlico`) |
 | `triggers` | yes | array of event types; at least one |
 | `permissions` | no | array; every entry must be in the vocabulary below |
 | `timeout_seconds` | no | positive integer (default 60) |
@@ -22,9 +22,11 @@ Fields the SDK validator reads (`name` is read by the `validate` CLI for its suc
 Other keys you'll see in real manifests (`description`, `capabilities`, `sdk`, `runtime`, …)
 are consumed elsewhere in the platform; this validator neither requires nor rejects them.
 
-**Entrypoint resolution.** `entrypoint = "my_plugin.plugin:MyPlugin"` is split on `:` into a
-module path and a class name; the loader does `importlib.import_module(module)` then
-instantiates the class with no arguments.
+**Entrypoint resolution.** `entrypoint = "main:catlico"` is split on `:` into a module path and
+an attribute name; the loader does `importlib.import_module(module)` then reads that attribute,
+which must be a `catlico_plugin_sdk.Catlico` app. The manifest's `triggers` must match the app's
+registered `@catlico.event` handlers exactly (enforced by the worker and by `catlico-plugin
+run`/`validate`).
 
 ## Permissions
 
@@ -42,9 +44,10 @@ read:observable      write:observable
 Request the narrowest set that works. Each `ctx.api` method requires a specific permission —
 the full method→permission table is in [writing-a-plugin.md](writing-a-plugin.md#ctxapi--reading-and-writing-catlico-entities).
 
-> **Adding a permission is a three-repo change**: this frozenset, the runner's install
-> validator (`_ALLOWED_PERMISSIONS`), and the API's runtime enforcement
-> (`catlico-api/app/api/internal/routes/plugin_runtime.py`). Never change one in isolation.
+> **Adding a permission is a three-repo change**: this frozenset, the runner's registry
+> validator (`_ALLOWED_PERMISSIONS` in `plugin_runner/registry.py`), and the API's runtime
+> enforcement (`catlico-api/app/api/internal/routes/plugin_runtime.py`). Never change one in
+> isolation.
 
 ## `[[configuration]]` parameters
 
@@ -90,7 +93,7 @@ warning just flags a likely typo.
 `validate_manifest` returns hard errors **only** for shapes the platform would reject:
 
 - missing `id`, `version`, or `entrypoint`
-- an entrypoint without `:`
+- an entrypoint without `:` (must be `module:app_object`)
 - no triggers
 - a permission outside the vocabulary
 - a non-positive `timeout_seconds`
