@@ -12,19 +12,19 @@ secrets. It exists to show the *other* half of the SDK contract — using
 connection or an API key to run. For a plugin that also demonstrates
 ``ctx.http`` and secrets, see ``catlico-plugins/abuseipdb``.
 
-See ``README.md`` in this directory for how to validate, run, and test it,
-and ``docs/quickstart.md`` in the SDK repo for a guided walkthrough that
-builds a plugin like this one from scratch.
+The logic lives here as plain async functions; ``main.py`` wires them to events
+with ``@catlico.event`` / ``@catlico.health``. The unsupported-type filter is a
+matcher on the event decorator (an envelope-only check); ``process`` re-checks
+config defensively. See ``README.md`` for how to validate, run, and test it.
 """
 from __future__ import annotations
 
 import ipaddress
 
-from catlico_plugin_sdk import CatlicoPlugin
 from catlico_plugin_sdk.plugin import ConfigError, InputError
 
 #: Observable types this plugin knows how to defang.
-_SUPPORTED_TYPES = {"ip", "domain", "url", "hostname"}
+SUPPORTED_TYPES = {"ip", "domain", "url", "hostname"}
 
 #: Config values ``style`` accepts (also declared as `choices` in the manifest —
 #: the manifest schema doesn't enforce choices at validate time, so process()
@@ -64,54 +64,50 @@ def private_range_note(ip_value: str) -> str | None:
     return None
 
 
-class DefangAnnotatorPlugin(CatlicoPlugin):
-    triggers = ["observable.created"]
+def supported(event) -> bool:
+    """Envelope-only filter: an observable.created event of a type we can defang."""
+    return event.data.get("observable_type") in SUPPORTED_TYPES
 
-    async def health(self, ctx) -> dict:
-        # No secrets to check, but a bad org-level config override should still
-        # fail activation loudly rather than silently misbehaving per-event.
-        style = ctx.config.get("style", "brackets")
-        if style not in _STYLES:
-            raise ConfigError(
-                f"unknown defang style {style!r}; expected one of {sorted(_STYLES)}"
-            )
-        return {"ok": True}
 
-    async def should_process(self, event, ctx) -> bool:
-        # Cheap envelope filter — only observable types we know how to defang.
-        return (
-            event.event_type in self.triggers
-            and event.data.get("observable_type") in _SUPPORTED_TYPES
+async def health(ctx) -> dict:
+    # No secrets to check, but a bad org-level config override should still
+    # fail activation loudly rather than silently misbehaving per-event.
+    style = ctx.config.get("style", "brackets")
+    if style not in _STYLES:
+        raise ConfigError(
+            f"unknown defang style {style!r}; expected one of {sorted(_STYLES)}"
+        )
+    return {"ok": True}
+
+
+async def process(event, ctx) -> None:
+    value = (event.data.get("data") or "").strip()
+    if not value:
+        raise InputError("observable has no value to defang")
+
+    style = ctx.config.get("style", "brackets")
+    if style not in _STYLES:
+        raise ConfigError(
+            f"unknown defang style {style!r}; expected one of {sorted(_STYLES)}"
         )
 
-    async def process(self, event, ctx) -> None:
-        value = (event.data.get("data") or "").strip()
-        if not value:
-            raise InputError("observable has no value to defang")
+    await ctx.progress(f"defanging {value}", percent=25)
+    defanged = defang(value, style)
 
-        style = ctx.config.get("style", "brackets")
-        if style not in _STYLES:
-            raise ConfigError(
-                f"unknown defang style {style!r}; expected one of {sorted(_STYLES)}"
-            )
+    notes: list[str] = []
+    observable_type = event.data.get("observable_type", "")
+    if observable_type == "ip" and ctx.config.get("annotate_private_ranges", True):
+        note = private_range_note(value)
+        if note:
+            notes.append(note)
 
-        await ctx.progress(f"defanging {value}", percent=25)
-        defanged = defang(value, style)
+    await ctx.progress("writing enrichment", percent=75)
 
-        notes: list[str] = []
-        observable_type = event.data.get("observable_type", "")
-        if observable_type == "ip" and ctx.config.get("annotate_private_ranges", True):
-            note = private_range_note(value)
-            if note:
-                notes.append(note)
-
-        await ctx.progress("writing enrichment", percent=75)
-
-        summary = defanged if not notes else f"{defanged} — {'; '.join(notes)}"
-        await ctx.api.add_observable_enrichment(
-            event.object_id,
-            source="Defang Annotator",
-            data={"defanged": defanged, "style": style, "notes": notes},
-            verdict="info",
-            summary=summary,
-        )
+    summary = defanged if not notes else f"{defanged} — {'; '.join(notes)}"
+    await ctx.api.add_observable_enrichment(
+        event.object_id,
+        source="Defang Annotator",
+        data={"defanged": defanged, "style": style, "notes": notes},
+        verdict="info",
+        summary=summary,
+    )

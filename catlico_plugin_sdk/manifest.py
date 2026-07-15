@@ -82,7 +82,7 @@ def _check_manifest(manifest: dict) -> tuple[list[str], list[str]]:
 
     entrypoint = manifest.get("entrypoint", "")
     if entrypoint and ":" not in entrypoint:
-        errors.append("entrypoint must be 'module:Class'")
+        errors.append("entrypoint must be 'module:app_object' (e.g. 'main:catlico')")
 
     if not manifest.get("triggers"):
         errors.append("must declare at least one trigger")

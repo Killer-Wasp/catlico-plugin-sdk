@@ -30,6 +30,7 @@ from typing import Any, Callable
 import httpx
 
 from catlico_plugin_sdk.api import PluginHttp
+from catlico_plugin_sdk.app import Catlico
 from catlico_plugin_sdk.models import PluginContext, PluginEvent
 
 
@@ -421,6 +422,18 @@ def alert_event(
     )
 
 
+async def run_app(app: Catlico, event: PluginEvent, ctx: PluginContext) -> dict:
+    """Dispatch ``event`` through ``app`` and return the result dict.
+
+    The test-kit counterpart to the worker's dispatch: drives a whole
+    ``Catlico`` app (matchers + handlers + error classification) end-to-end
+    against a ``FakeContext``, so an integration test can assert on the run's
+    ``status``/``skip_reason``/``error_kind`` exactly as the runner would see them.
+    Call a single handler directly when you only need to unit-test one function.
+    """
+    return await app.dispatch(event, ctx)
+
+
 def fake_http(handler: Callable[[httpx.Request], httpx.Response]) -> PluginHttp:
     """A ``PluginHttp`` whose requests are served by ``handler`` (no network).
 
@@ -439,4 +452,5 @@ __all__ = [
     "fake_http",
     "make_envelope",
     "observable_event",
+    "run_app",
 ]
