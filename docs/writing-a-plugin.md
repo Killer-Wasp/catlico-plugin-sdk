@@ -1,15 +1,18 @@
 # Writing a plugin
 
-The authoring contract: the base class, the event, the runtime context, and error handling.
+The authoring contract: the app and its decorators, the event, the runtime context, and error
+handling.
 
 ## Where a plugin runs
 
-A Catlico plugin is a small Python package that reacts to Catlico events (an observable was
+A Catlico plugin is a small uv project that reacts to Catlico events (an observable was
 created, a case was opened, …) and writes back *evidence* — enrichments, results, proposed
 case edits. You write it against this SDK; at runtime the
-[plugin runner](https://github.com/Killer-Wasp/catlico-plugin-runner) loads your package and
-executes it in an isolated sandbox (a subprocess or container — `catlico_plugin_sdk._worker`
-is the sandbox entrypoint).
+[plugin runner](https://github.com/Killer-Wasp/catlico-plugin-runner) provisions it as a
+per-plugin uv project with its own dependency venv and executes each run in a plain child
+process bound to that venv's interpreter (`catlico_plugin_sdk._worker` is the entrypoint the
+runner spawns). Plugins are trusted first-party code — there is no sandbox; the process runs
+with the runner's privileges.
 
 Two boundaries matter, and the SDK enforces both:
 
@@ -21,43 +24,68 @@ Two boundaries matter, and the SDK enforces both:
   test kit enforces the *same* rules offline, so an over-reach fails in your unit tests, not
   in production.
 
-## The base class
+## The app
 
-Subclass `CatlicoPlugin` and override the hooks you need:
+A plugin builds one `Catlico` app and decorates plain `async` functions with it. The manifest's
+`entrypoint` names that app (`entrypoint = "main:catlico"` — module `main`, object `catlico`).
+By convention the app lives in a root `main.py` and delegates to functions in `src/<pkg>/`:
 
 ```python
-from catlico_plugin_sdk import CatlicoPlugin, ConfigError, InputError
+# main.py — the entrypoint the runner imports
+from catlico_plugin_sdk import Catlico, ConfigError, SkipRun
+
+catlico = Catlico()
 
 
-class MyPlugin(CatlicoPlugin):
-    triggers = ["observable.created"]           # event types you want (required)
+@catlico.event(
+    "observable.created",
+    matchers=[lambda e: e.data.get("observable_type") == "ip"],  # cheap envelope filter
+)
+async def enrich(event, ctx):
+    # The real work. Raise a PluginRuntimeError subclass to fail the run,
+    # or raise SkipRun(reason) to end the run as "skipped".
+    ...
 
-    async def health(self, ctx) -> dict:
-        # Called on activation. Return a dict, or raise to fail activation.
-        if not ctx.secrets.get("key"):
-            raise ConfigError("API key is not configured")
-        return {"ok": True}
 
-    async def should_process(self, event, ctx) -> bool:
-        # Cheap envelope filter — no vendor/API calls here. Return False to skip.
-        return event.data.get("observable_type") == "ip"
-
-    async def process(self, event, ctx) -> None:
-        # The real work. Raise a PluginRuntimeError subclass to fail the run.
-        ...
+@catlico.health()
+async def health(ctx):
+    # Called at register/enable and on config change. Return a dict, or raise
+    # to fail the health check.
+    if not ctx.secrets.get("key"):
+        raise ConfigError("API key is not configured")
+    return {"ok": True}
 ```
 
-The runner calls these in order: `health` (on activation), then per event
-`should_process` → (if it returns `True`) `process`. All three are `async`.
+The decorators return the wrapped function **unchanged** (Bolt-style), so each handler is a
+normal `async def` you can call directly in a unit test. All handlers are `async`.
 
-Base-class defaults (`plugin.py`): `health` returns `{"ok": True}`, `should_process` returns
-`event.event_type in self.triggers`, and `process` raises `NotImplementedError` — you must
-override `process`.
+- `@catlico.event(event_type, matchers=())` registers a handler. **Multiple handlers may
+  register for the same event**; `dispatch` runs them in registration order. `matchers` is a
+  list of cheap sync-or-async callables taking `(event)` or `(event, ctx)` — return falsey to
+  reject. A handler whose matchers reject is not run.
+- `@catlico.health()` registers the health check (at most one).
+
+**The manifest's `triggers` must equal the app's registered events**, exactly. The worker (and
+`catlico-plugin run`/`validate`) enforce this strict equality — a trigger with no matching
+`@catlico.event` handler, or vice versa, is a config error at load, never a silent no-op.
+
+### Two ways to skip an event
+
+Both classify the run as `skipped` (preserving the API's skipped-run accounting):
+
+- **`matchers=[...]`** on the decorator — cheap envelope filters, evaluated before the handler
+  runs. Use for `event.data`/`object_type` checks that cost nothing.
+- **`raise SkipRun(reason)`** inside the handler — for a decision that needs work (a lookup, a
+  config read) before you know the event is irrelevant.
+
+If several handlers register for one event and at least one completes, the run is `success`;
+if every handler was skipped, the run is `skipped`. The first handler to raise a
+non-`SkipRun` exception fails the run and later handlers don't run.
 
 ## The event
 
-`process` and `should_process` receive a `PluginEvent` — a thin, already-parsed envelope.
-Filter on its fields cheaply; fetch full entity detail through `ctx.api` only when you need it.
+Handlers receive a `PluginEvent` — a thin, already-parsed envelope. Filter on its fields
+cheaply (in a matcher); fetch full entity detail through `ctx.api` only when you need it.
 
 | Attribute | Meaning |
 |---|---|
@@ -131,7 +159,7 @@ a normal `httpx.Response`. Inspect `resp.status_code` yourself and raise if you 
 
 ## Error handling
 
-Raise one of these from `health`/`process` to fail a run. Each carries an `error_kind` the
+Raise one of these from a handler (or `health`) to fail a run. Each carries an `error_kind` the
 runner uses to classify the failure and decide whether to retry:
 
 | Exception | `error_kind` | Retried? | Meaning |
@@ -146,16 +174,16 @@ exceptions; let them surface. Because `ctx.http` already maps `401/403 → Confi
 `429/5xx/network → TransientError`, a plugin that calls vendors through `ctx.http` gets
 sensible retry behaviour without writing any of this by hand.
 
-All four exceptions are importable from the package top level
-(`from catlico_plugin_sdk import ConfigError`).
+All four exceptions — plus `Catlico` and `SkipRun` — are importable from the package top level
+(`from catlico_plugin_sdk import ConfigError, SkipRun`).
 
 ## What not to do
 
 - **Never print or log secrets.** The runner redacts run-secret values from the log tail,
   but only as a backstop — base64/URL-encoded or otherwise transformed secrets pass through
   unredacted.
-- **No vendor or API calls in `should_process`.** It is a cheap envelope filter; the runtime
-  budget assumes it costs nothing.
+- **No vendor or API calls in a `matchers=` filter.** Matchers are cheap envelope checks; the
+  runtime budget assumes they cost nothing. Do work-that-decides-to-skip with `SkipRun`.
 - **Don't use a bare `httpx`/`requests` client** — you lose the error classification and the
   run misclassifies failures.
 

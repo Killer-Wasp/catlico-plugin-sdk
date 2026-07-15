@@ -25,14 +25,15 @@ in — it's the finished artifact that tutorial builds toward.
 | A config value | `ctx.config.get("style")` and `ctx.config.get("annotate_private_ranges")` |
 | `ctx.progress` | two progress calls in `process()` |
 | Error model | `InputError` for an empty observable value, `ConfigError` for an invalid `style` override (checked in both `health()` and `process()`) |
-| `should_process` filtering | skips observable types this plugin doesn't know how to defang |
+| Matcher filtering | `matchers=[plugin.supported]` on the `@catlico.event` handler skips observable types this plugin can't defang |
 
 ## Layout
 
 ```
 catlico-plugin.toml                            # manifest: triggers, permissions, config
 pyproject.toml                                  # note the [tool.uv.sources] path — see below
-src/defang_annotator_plugin/plugin.py           # the plugin
+main.py                                         # the Catlico app + @catlico.event / @catlico.health
+src/defang_annotator_plugin/plugin.py           # the plugin logic (plain functions)
 tests/test_plugin.py                            # FakeContext-based tests
 example-event.json                              # a sample observable.created envelope
 ```

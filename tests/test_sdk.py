@@ -1,25 +1,9 @@
-"""Tests for the plugin SDK: event models, plugin base class, and runtime context."""
+"""Tests for the plugin SDK event models and runtime context.
+
+The ``Catlico`` app (the authoring surface) is covered in ``test_app.py``.
+"""
 import pytest
-from catlico_plugin_sdk import (
-    CatlicoPlugin,
-    PluginEvent,
-    PluginContext,
-    PluginRuntimeError,
-)
-
-
-class _TestPlugin(CatlicoPlugin):
-    """Minimal plugin for testing the base class contract."""
-    triggers = ["observable.created"]
-
-    async def health(self, ctx):
-        return {"ok": True}
-
-    async def should_process(self, event, ctx) -> bool:
-        return event.object_type == "observable"
-
-    async def process(self, event, ctx) -> None:
-        pass
+from catlico_plugin_sdk import PluginContext, PluginEvent
 
 
 class TestPluginEvent:
@@ -74,31 +58,3 @@ class TestPluginContext:
         )
         assert ctx.has_permission("read:observable") is True
         assert ctx.has_permission("write:alerts") is False
-
-
-class TestPluginBase:
-    @pytest.mark.asyncio
-    async def test_plugin_health(self):
-        plugin = _TestPlugin()
-        result = await plugin.health(PluginContext(
-            run_id="r1", plugin_id="p1", plugin_version="1",
-            organisation_id="org-a", event_id="e1",
-            permissions=set(), api=None,
-        ))
-        assert result == {"ok": True}
-
-    @pytest.mark.asyncio
-    async def test_plugin_should_process(self):
-        plugin = _TestPlugin()
-        event = PluginEvent.from_envelope({
-            "event_type": "observable.created",
-            "object": {"type": "observable", "id": "x"},
-            "organisation_id": "org-a",
-            "data": {},
-        })
-        ctx = PluginContext(
-            run_id="r1", plugin_id="p1", plugin_version="1",
-            organisation_id="org-a", event_id="e1",
-            permissions=set(), api=None,
-        )
-        assert await plugin.should_process(event, ctx) is True

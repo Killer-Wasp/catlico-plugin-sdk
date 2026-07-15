@@ -1,16 +1,25 @@
 """Scaffolding for ``catlico-plugin new`` — generates a fresh, valid plugin tree.
 
 Kept separate from ``cli.py`` (which stays a thin argparse + dispatch layer) so the
-id/package/class derivation and the file templates — modeled on
-``catlico-plugins/abuseipdb``, the SDK's reference plugin — have one place to live
-and one thing to test. The generated ``catlico-plugin.toml`` is built to pass
+id/package derivation and the file templates have one place to live and one thing
+to test. The generated tree is a full uv project the runner can sync and run:
+
+    <plugin-id>/
+      main.py                 # entrypoint: `catlico = Catlico()` + @catlico.event
+      catlico-plugin.toml     # entrypoint = "main:catlico"
+      pyproject.toml
+      src/<pkg>/__init__.py
+      src/<pkg>/plugin.py     # module-level async process(event, ctx) / health(ctx)
+      tests/test_plugin.py
+      .github/workflows/ci.yml
+
+The generated ``catlico-plugin.toml`` is built to pass
 ``catlico_plugin_sdk.manifest.validate_manifest`` with an empty error list and
 ``manifest_warnings`` with no warnings out of the box.
 """
 from __future__ import annotations
 
 import json
-import keyword
 import re
 from pathlib import Path
 
@@ -20,33 +29,14 @@ from pathlib import Path
 #: of real plugin ids in the repo (``abuseipdb``, ``my-cool-plugin``).
 _ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
-_DOCKERFILE = """\
-FROM python:3.14-slim
-COPY --from=ghcr.io/astral-sh/uv:0.11.7 /uv /bin/uv
-RUN useradd --uid 65534 --no-create-home nobodyplugin || true
-WORKDIR /plugin
-COPY . /plugin
-RUN pip install --no-cache-dir /plugin/.catlico-sdk && rm -rf /plugin/.catlico-sdk
-RUN uv export --frozen --no-dev --no-emit-project --no-emit-package catlico-plugin-sdk --no-hashes -o /tmp/deps.txt \\
- && uv pip install --system --no-cache -r /tmp/deps.txt \\
- && rm -f /tmp/deps.txt
-ENV PYTHONPATH=/plugin/src:/plugin
-USER 65534:65534
-"""
-
-#: GitHub Actions CI for a generated plugin: the same three gates the runner's
-#: install pipeline applies (``catlico-plugin validate``), plus a lint and the
-#: plugin's own tests. So install-from-ref then fails only for environmental
-#: reasons, not for plugin bugs a push could have caught.
-#:
-#: The SDK is installed from git because a standalone plugin repo has no sibling
-#: SDK checkout (the ``[tool.uv.sources]`` path override in pyproject.toml is a
-#: local-``uv`` convenience that pip ignores). Once the SDK is published to an
-#: index, this step can drop away and ``pip install .[dev]`` resolves it directly.
+#: GitHub Actions CI for a generated plugin: the runner's own gates —
+#: ``uv sync --frozen`` (the committed lock resolves), the plugin's tests, and
+#: ``catlico-plugin validate`` (manifest + trigger/handler agreement) — so a
+#: pushed plugin fails in CI, not at install time.
 _CI_WORKFLOW = """\
 name: CI
 
-# Manifest validation, lint, and tests for a Catlico plugin.
+# Sync (frozen), test, and validate a Catlico plugin.
 on:
   push:
   pull_request:
@@ -57,30 +47,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.14"
 
-      # Installed from git until catlico-plugin-sdk is published to an index; the
-      # `[tool.uv.sources]` override in pyproject.toml is for local `uv` dev only
-      # and is ignored by pip, so it does not affect this job.
-      - name: Install the Catlico plugin SDK
-        run: pip install "catlico-plugin-sdk @ git+https://github.com/Killer-Wasp/catlico-plugin-sdk"
-
-      - name: Install the plugin (with dev/test dependencies)
-        run: pip install -e ".[dev]"
-
-      - name: Validate the manifest
-        run: catlico-plugin validate .
-
-      - name: Lint
-        run: |
-          pip install ruff
-          ruff check .
+      - name: Sync (frozen)
+        run: uv sync --frozen
 
       - name: Test
-        run: pytest
+        run: uv run pytest
+
+      - name: Validate the manifest
+        run: uv run catlico-plugin validate .
 """
 
 
@@ -97,26 +76,11 @@ def derive_package_name(plugin_id: str) -> str:
     return f"{stem}_plugin"
 
 
-def derive_class_name(plugin_id: str) -> str:
-    """``<plugin-id>`` -> a CamelCase ``...Plugin`` class name.
-
-    e.g. ``abuseipdb`` -> ``AbuseipdbPlugin``, ``my-cool-plugin`` ->
-    ``MyCoolPluginPlugin`` (each hyphen-separated segment is title-cased, then
-    ``Plugin`` is appended).
-    """
-    segments = [s for s in re.split(r"[^0-9a-zA-Z]+", plugin_id) if s]
-    camel = "".join(s.capitalize() for s in segments) or "Plugin"
-    if camel[0].isdigit():
-        camel = f"P{camel}"
-    return f"{camel}Plugin"
-
-
 def scaffold_plugin(
     plugin_id: str,
     parent_dir: str | Path,
     *,
     name: str | None = None,
-    class_name: str | None = None,
 ) -> Path:
     """Generate a fresh plugin tree at ``<parent_dir>/<plugin_id>/``.
 
@@ -130,17 +94,6 @@ def scaffold_plugin(
             "contain only letters, digits, hyphens, and underscores"
         )
 
-    # A supplied class name is spliced verbatim into ``class X(...)`` and the
-    # manifest entrypoint, so it must be a valid, non-keyword Python identifier —
-    # otherwise the generated plugin.py is a SyntaxError while the CLI exits 0.
-    if class_name is not None and (
-        not class_name.isidentifier() or keyword.iskeyword(class_name)
-    ):
-        raise ValueError(
-            f"invalid class name {class_name!r}: must be a valid Python "
-            "identifier and not a reserved keyword"
-        )
-
     target = Path(parent_dir) / plugin_id
     # ``iterdir`` raises NotADirectoryError if the path is a regular file, which
     # new_command does not catch — pre-check for a clean error either way.
@@ -152,7 +105,6 @@ def scaffold_plugin(
         )
 
     package = derive_package_name(plugin_id)
-    cls = class_name or derive_class_name(plugin_id)
     display_name = name or plugin_id
 
     src_dir = target / "src" / package
@@ -162,14 +114,14 @@ def scaffold_plugin(
     workflows_dir.mkdir(parents=True, exist_ok=True)
 
     (target / "catlico-plugin.toml").write_text(
-        _manifest_toml(plugin_id, display_name, package, cls)
+        _manifest_toml(plugin_id, display_name)
     )
     (target / "pyproject.toml").write_text(_pyproject_toml(plugin_id, package, display_name))
-    (target / "Dockerfile.catlico").write_text(_DOCKERFILE)
+    (target / "main.py").write_text(_main_py(display_name, package))
     (workflows_dir / "ci.yml").write_text(_CI_WORKFLOW)
-    (src_dir / "__init__.py").write_text(_init_py(package, cls))
-    (src_dir / "plugin.py").write_text(_plugin_py(display_name, cls))
-    (target / "tests" / "test_plugin.py").write_text(_test_py(package, cls, display_name))
+    (src_dir / "__init__.py").write_text("")
+    (src_dir / "plugin.py").write_text(_plugin_py(display_name))
+    (target / "tests" / "test_plugin.py").write_text(_test_py(package, display_name))
 
     return target
 
@@ -184,7 +136,7 @@ def _toml_str(value: str) -> str:
     return json.dumps(value)
 
 
-def _manifest_toml(plugin_id: str, display_name: str, package: str, cls: str) -> str:
+def _manifest_toml(plugin_id: str, display_name: str) -> str:
     return f"""\
 id = {_toml_str(plugin_id)}
 name = {_toml_str(display_name)}
@@ -192,7 +144,7 @@ version = "0.1.0"
 description = {_toml_str(f"TODO: describe what {display_name} does.")}
 sdk = ">=0.1,<1"
 runtime = "python"
-entrypoint = {_toml_str(f"{package}.plugin:{cls}")}
+entrypoint = "main:catlico"
 capabilities = ["enrichment"]
 triggers = ["observable.created"]
 permissions = ["read:observable", "write:observable_enrichment"]
@@ -225,7 +177,7 @@ dependencies = [
     "catlico-plugin-sdk",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "pytest>=9.1.0",
     "pytest-asyncio>=0.24",
@@ -239,71 +191,89 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/{package}"]
 
+# Dev-only source for local `uv` work in the monorepo, where the SDK is an
+# unpublished sibling checkout. A standalone plugin repo replaces this with a git
+# pin, e.g.:
+#   catlico-plugin-sdk = {{ git = "https://github.com/Killer-Wasp/catlico-plugin-sdk", rev = "<sha>" }}
 [tool.uv.sources]
 catlico-plugin-sdk = {{ path = "../../catlico-plugin-sdk" }}
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 """
 
 
-def _init_py(package: str, cls: str) -> str:
+def _main_py(display_name: str, package: str) -> str:
     return f"""\
-from {package}.plugin import {cls}
+\"\"\"{display_name} — the Catlico plugin entrypoint.
 
-__all__ = ["{cls}"]
+The runner imports ``catlico`` (entrypoint = "main:catlico") and dispatches
+events to the handlers below, which delegate to the plain functions in
+``src/{package}/plugin.py`` — that's where your logic lives.
+\"\"\"
+from catlico_plugin_sdk import Catlico
+
+from {package} import plugin
+
+catlico = Catlico()
+
+
+@catlico.event("observable.created")
+async def on_observable_created(event, ctx):
+    # A ``matchers=[...]`` argument on the decorator is the place for cheap
+    # envelope filters, e.g. only IPs:
+    #   @catlico.event("observable.created",
+    #                  matchers=[lambda e: e.data.get("observable_type") == "ip"])
+    await plugin.process(event, ctx)
+
+
+@catlico.health()
+async def health(ctx):
+    return await plugin.health(ctx)
 """
 
 
-def _plugin_py(display_name: str, cls: str) -> str:
+def _plugin_py(display_name: str) -> str:
     return f"""\
-\"\"\"{display_name!r} plugin — generated by `catlico-plugin new`.
+\"\"\"{display_name} plugin logic — generated by `catlico-plugin new`.
 
-This is a minimal, runnable starting point: it subclasses ``CatlicoPlugin``,
-declares a trigger, and writes a trivial observable enrichment so the plugin is
-valid and exercisable via ``catlico-plugin run`` right away. Replace the TODOs
-below with your real logic.
+Plain module-level async functions: ``main.py`` wires them to events. Replace the
+TODOs with your real logic. Testable directly against a ``FakeContext`` (see
+``tests/test_plugin.py``).
 \"\"\"
 from __future__ import annotations
 
-from catlico_plugin_sdk import CatlicoPlugin
 from catlico_plugin_sdk.plugin import InputError
 
 
-class {cls}(CatlicoPlugin):
-    triggers = ["observable.created"]
+async def health(ctx) -> dict:
+    # TODO: check any credentials/config this plugin needs (e.g.
+    # ctx.secrets["api_key"]) and raise ConfigError if missing/unusable.
+    return {{"ok": True}}
 
-    async def health(self, ctx) -> dict:
-        # TODO: check any credentials/config this plugin needs (e.g.
-        # ctx.secrets["api_key"]) and raise ConfigError if missing.
-        return {{"ok": True}}
 
-    async def should_process(self, event, ctx) -> bool:
-        # Cheap, synchronous filter — return False to skip without a run.
-        # TODO: narrow this to the observable/event shapes you actually handle.
-        return event.event_type in self.triggers
+async def process(event, ctx) -> None:
+    value = (event.data.get("data") or "").strip()
+    if not value:
+        raise InputError("observable has no value")
 
-    async def process(self, event, ctx) -> None:
-        value = (event.data.get("data") or "").strip()
-        if not value:
-            raise InputError("observable has no value")
-
-        # TODO: replace this with your real enrichment logic — e.g. a vendor
-        # call via ``ctx.http``, then a verdict derived from the response. This
-        # stub just records that the plugin ran, so a first `catlico-plugin
-        # run` has something to show.
-        await ctx.api.add_observable_enrichment(
-            event.object_id,
-            source={display_name!r},
-            data={{"value": value}},
-            verdict="info",
-            summary={display_name!r} + f" processed {{value}}",
-        )
+    # TODO: replace this with your real enrichment logic — e.g. a vendor call via
+    # ``ctx.http``, then a verdict derived from the response. This stub just
+    # records that the plugin ran, so a first `catlico-plugin run` has something
+    # to show. Raise ``SkipRun(...)`` (from catlico_plugin_sdk) to skip an event
+    # after inspecting it.
+    await ctx.api.add_observable_enrichment(
+        event.object_id,
+        source={display_name!r},
+        data={{"value": value}},
+        verdict="info",
+        summary={display_name!r} + f" processed {{value}}",
+    )
 """
 
 
-def _test_py(package: str, cls: str, display_name: str) -> str:
+def _test_py(package: str, display_name: str) -> str:
     return f"""\
 \"\"\"Starter test for {display_name!r}, generated by `catlico-plugin new`.
 
@@ -311,19 +281,18 @@ TODO: replace/expand this with real coverage of process().
 \"\"\"
 from catlico_plugin_sdk.testing import FakeContext, observable_event
 
-from {package}.plugin import {cls}
+from {package} import plugin
 
 
 async def test_process_writes_an_enrichment():
     ctx = FakeContext(permissions={{"read:observable", "write:observable_enrichment"}})
-    await {cls}().process(observable_event(data="1.2.3.4"), ctx)
+    await plugin.process(observable_event(data="1.2.3.4"), ctx)
     assert ctx.results
     assert ctx.results[0]["source"] == {display_name!r}
 """
 
 
 __all__ = [
-    "derive_class_name",
     "derive_package_name",
     "scaffold_plugin",
 ]

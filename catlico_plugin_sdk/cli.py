@@ -2,20 +2,21 @@
 
 Three subcommands, all offline (no live Catlico API, no runner):
 
-* ``catlico-plugin new PLUGIN_ID [--dir DIR] [--name NAME] [--class CLASS]`` —
-  scaffold a fresh, valid plugin directory tree so authors don't have to
-  hand-copy an existing plugin.
+* ``catlico-plugin new PLUGIN_ID [--dir DIR] [--name NAME]`` — scaffold a fresh,
+  valid plugin directory tree so authors don't have to hand-copy an existing
+  plugin.
 * ``catlico-plugin validate [PATH]`` — validate a plugin's ``catlico-plugin.toml``
   manifest: schema, required fields, and config parameter declarations.
 * ``catlico-plugin run --event EVENT.json [PATH]`` — execute a plugin locally
   against an event envelope using the fake runtime context, then print the
   emitted results, progress, and any permission violations.
 
-``run`` mirrors the sandbox worker's invocation path
-(``catlico_plugin_sdk._worker``): it imports the plugin via its manifest
-entrypoint, parses the envelope into a ``PluginEvent``, and drives
-``should_process`` → ``process`` — but against a ``FakeContext`` instead of a
-live runtime.
+``run`` mirrors the worker's invocation path (``catlico_plugin_sdk._worker``): it
+imports the plugin's ``Catlico`` app via its manifest entrypoint, parses the
+envelope into a ``PluginEvent``, and drives ``app.dispatch`` — but against a
+``FakeContext`` instead of a live runtime. It also checks that the manifest's
+declared ``triggers`` match the app's registered ``@catlico.event`` handlers,
+the same strict equality the worker enforces.
 """
 from __future__ import annotations
 
@@ -24,7 +25,6 @@ import asyncio
 import importlib
 import json
 import sys
-import traceback
 from pathlib import Path
 from typing import TextIO
 
@@ -35,8 +35,8 @@ from catlico_plugin_sdk.manifest import (
     manifest_warnings,
     validate_manifest,
 )
+from catlico_plugin_sdk.app import Catlico
 from catlico_plugin_sdk.models import PluginEvent
-from catlico_plugin_sdk.plugin import PluginRuntimeError
 from catlico_plugin_sdk.scaffold import scaffold_plugin
 from catlico_plugin_sdk.testing import FakeContext
 
@@ -51,12 +51,11 @@ def new_command(
     *,
     parent_dir: str = ".",
     name: str | None = None,
-    class_name: str | None = None,
     out: TextIO = sys.stdout,
 ) -> int:
     """Scaffold a fresh plugin directory tree. Returns a process exit code."""
     try:
-        target = scaffold_plugin(plugin_id, parent_dir, name=name, class_name=class_name)
+        target = scaffold_plugin(plugin_id, parent_dir, name=name)
     except (ValueError, FileExistsError) as exc:
         print(f"error: {exc}", file=out)
         return 1
@@ -72,10 +71,19 @@ def new_command(
     return 0
 
 
-def _source_path(directory: Path) -> str:
-    """Where the plugin's importable package lives (standard layout uses src/)."""
+def _sys_path_entries(directory: Path) -> list[str]:
+    """Where imports resolve from when running without a synced venv.
+
+    The plugin root carries ``main.py`` (the entrypoint module); ``src/`` carries
+    the plugin's package. The CLI runs offline (no ``uv sync``), so both go on
+    ``sys.path`` — unlike the worker, which imports the package from the venv and
+    only needs the root for ``main.py``.
+    """
+    entries = [str(directory)]
     src = directory / "src"
-    return str(src if src.is_dir() else directory)
+    if src.is_dir():
+        entries.append(str(src))
+    return entries
 
 
 def _load_json(path: str | None) -> dict:
@@ -114,43 +122,34 @@ def validate_command(path: str, *, out: TextIO = sys.stdout) -> int:
     return 0
 
 
-def _load_plugin(manifest: dict, directory: Path):
+def _load_app(manifest: dict, directory: Path) -> Catlico:
+    """Import the plugin's ``Catlico`` app from its manifest entrypoint.
+
+    Entrypoint is ``module:app_object`` (e.g. ``main:catlico``). importlib caches
+    by module name: if a module of this name is already imported (e.g. two copies
+    of the same plugin under different paths), the cached one is returned.
+    Harmless for a one-shot CLI process; a trap for a test that loads two
+    same-named plugin copies in one interpreter (every plugin's ``main`` collides).
+    """
     entrypoint = manifest.get("entrypoint", "")
-    module_name, _, class_name = entrypoint.partition(":")
-    source = _source_path(directory)
-    if source not in sys.path:
-        sys.path.insert(0, source)
-    # importlib caches by module name: if a module of this name is already
-    # imported (e.g. a copy of the same plugin under a different path), the cached
-    # one is returned. Harmless for a one-shot CLI process; a trap for a test that
-    # runs two same-named plugin copies in one interpreter.
+    module_name, _, object_name = entrypoint.partition(":")
+    for entry in _sys_path_entries(directory):
+        if entry not in sys.path:
+            sys.path.insert(0, entry)
     module = importlib.import_module(module_name)
-    return getattr(module, class_name)()
+    app = getattr(module, object_name)
+    if not isinstance(app, Catlico):
+        raise TypeError(
+            f"entrypoint {entrypoint!r} is not a catlico_plugin_sdk.Catlico app "
+            f"(got {type(app).__name__})"
+        )
+    return app
 
 
-async def _drive(plugin, event: PluginEvent, ctx: FakeContext) -> dict:
-    """Run should_process → process, classifying failures like the worker does."""
+async def _drive(app: Catlico, event: PluginEvent, ctx: FakeContext) -> dict:
+    """Dispatch the event through the app, then close the fake context's http."""
     try:
-        if not await plugin.should_process(event, ctx):
-            return {
-                "status": "skipped",
-                "skip_reason": "should_process returned False",
-            }
-        await plugin.process(event, ctx)
-        return {"status": "success"}
-    except PluginRuntimeError as exc:
-        return {
-            "status": "failure",
-            "error": f"{type(exc).__name__}: {exc}",
-            "error_kind": getattr(exc, "error_kind", "bug"),
-        }
-    except Exception as exc:  # noqa: BLE001 — any plugin failure becomes a result
-        return {
-            "status": "failure",
-            "error": f"{type(exc).__name__}: {exc}",
-            "error_kind": "bug",
-            "traceback": traceback.format_exc(),
-        }
+        return await app.dispatch(event, ctx)
     finally:
         if ctx.http is not None:
             await ctx.http.aclose()
@@ -232,9 +231,22 @@ def run_command(
         return 1
 
     try:
-        plugin = _load_plugin(manifest, directory)
+        app = _load_app(manifest, directory)
     except Exception as exc:  # noqa: BLE001 — import/entrypoint failure
         print(f"error: could not load plugin: {exc}", file=out)
+        return 1
+
+    # Same strict equality the worker enforces: manifest triggers must match the
+    # app's registered @catlico.event handlers, so routing metadata can't drift.
+    declared = set(manifest.get("triggers", []))
+    registered = set(app.registered_events)
+    if declared != registered:
+        print(
+            "error: manifest triggers do not match registered @catlico.event handlers:",
+            file=out,
+        )
+        print(f"  - manifest triggers: {sorted(declared)}", file=out)
+        print(f"  - registered handlers: {sorted(registered)}", file=out)
         return 1
 
     # Real outbound HTTP (as the worker wires it) so vendor calls behave normally;
@@ -249,7 +261,7 @@ def run_command(
         organisation_id=event.organisation_id or "org-fake",
         event_id=event.event_id or "audit:fake",
     )
-    result = asyncio.run(_drive(plugin, event, ctx))
+    result = asyncio.run(_drive(app, event, ctx))
     _print_outcome(result, ctx, out=out)
     return 0 if result["status"] in ("success", "skipped") else 1
 
@@ -278,11 +290,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--name",
         dest="name",
         help="display name for the manifest (default: the plugin id)",
-    )
-    p_new.add_argument(
-        "--class",
-        dest="class_name",
-        help="plugin class name (default: derived from the plugin id)",
     )
 
     p_validate = sub.add_parser(
@@ -327,7 +334,6 @@ def main(argv: list[str] | None = None) -> int:
             args.plugin_id,
             parent_dir=args.dir,
             name=args.name,
-            class_name=args.class_name,
         )
     if args.command == "validate":
         return validate_command(args.path)

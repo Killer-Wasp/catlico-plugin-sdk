@@ -14,7 +14,7 @@ from catlico_plugin_sdk.manifest import (
     manifest_warnings,
     validate_manifest,
 )
-from catlico_plugin_sdk.scaffold import derive_class_name, derive_package_name
+from catlico_plugin_sdk.scaffold import derive_package_name
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -28,7 +28,7 @@ def test_valid_manifest_has_no_errors():
     manifest = {
         "id": "x",
         "version": "1.0.0",
-        "entrypoint": "x.plugin:X",
+        "entrypoint": "main:catlico",
         "triggers": ["observable.created"],
         "permissions": ["read:observable"],
         "timeout_seconds": 30,
@@ -45,12 +45,24 @@ def test_missing_required_fields_reported():
     assert any("trigger" in e for e in errors)
 
 
+def test_entrypoint_without_colon_is_error():
+    errors = validate_manifest(
+        {
+            "id": "x",
+            "version": "1",
+            "entrypoint": "main",  # no ':app_object'
+            "triggers": ["t"],
+        }
+    )
+    assert any("main:catlico" in e for e in errors)
+
+
 def test_unknown_permission_reported():
     errors = validate_manifest(
         {
             "id": "x",
             "version": "1",
-            "entrypoint": "a:B",
+            "entrypoint": "main:catlico",
             "triggers": ["t"],
             "permissions": ["read:observable", "delete:everything"],
         }
@@ -63,7 +75,7 @@ def test_bad_config_parameter_reported():
         {
             "id": "x",
             "version": "1",
-            "entrypoint": "a:B",
+            "entrypoint": "main:catlico",
             "triggers": ["t"],
             "configuration": [
                 {"type": "string"},  # missing name
@@ -81,22 +93,19 @@ def _base_manifest(**config) -> dict:
     return {
         "id": "x",
         "version": "1.0.0",
-        "entrypoint": "x.plugin:X",
+        "entrypoint": "main:catlico",
         "triggers": ["observable.created"],
         "configuration": [config] if config else [],
     }
 
 
 def test_secret_type_validates_cleanly():
-    # `type = "secret"` is a valid way to mark a secret (Catlico API's
-    # _is_secret_param accepts it) — no errors and no warnings.
     manifest = _base_manifest(name="key", type="secret", required=True)
     assert validate_manifest(manifest) == []
     assert manifest_warnings(manifest) == []
 
 
 def test_secret_boolean_still_validates_cleanly():
-    # Regression: the `secret = true` boolean convention must keep working.
     manifest = _base_manifest(name="key", type="string", secret=True, required=True)
     assert validate_manifest(manifest) == []
     assert manifest_warnings(manifest) == []
@@ -104,7 +113,6 @@ def test_secret_boolean_still_validates_cleanly():
 
 def test_unrecognised_type_is_warning_not_error():
     manifest = _base_manifest(name="k", type="weird")
-    # Production treats `type` as freeform, so an odd type never fails the manifest.
     assert validate_manifest(manifest) == []
     warnings = manifest_warnings(manifest)
     assert any("unrecognised type 'weird'" in w for w in warnings)
@@ -129,14 +137,6 @@ def test_derive_package_name_hyphenated_id():
     assert derive_package_name("my-cool-plugin") == "my_cool_plugin_plugin"
 
 
-def test_derive_class_name_simple_id():
-    assert derive_class_name("abuseipdb") == "AbuseipdbPlugin"
-
-
-def test_derive_class_name_hyphenated_id():
-    assert derive_class_name("my-cool-plugin") == "MyCoolPluginPlugin"
-
-
 def test_new_command_generates_expected_file_tree(tmp_path):
     out = io.StringIO()
     code = new_command("my-cool-plugin", parent_dir=str(tmp_path), out=out)
@@ -147,7 +147,7 @@ def test_new_command_generates_expected_file_tree(tmp_path):
     expected = {
         "catlico-plugin.toml",
         "pyproject.toml",
-        "Dockerfile.catlico",
+        "main.py",
         ".github/workflows/ci.yml",
         "src/my_cool_plugin_plugin/__init__.py",
         "src/my_cool_plugin_plugin/plugin.py",
@@ -157,17 +157,17 @@ def test_new_command_generates_expected_file_tree(tmp_path):
         str(p.relative_to(target)) for p in target.rglob("*") if p.is_file()
     }
     assert expected <= actual
+    # No Docker artifact in the venv-based model.
+    assert "Dockerfile.catlico" not in actual
     assert "created" in out.getvalue()
 
 
-def test_new_command_ci_workflow_runs_the_three_gates(tmp_path):
-    """The scaffolded CI workflow validates the manifest, lints, and tests —
-    the same gates the runner's install pipeline applies, minus environment."""
+def test_new_command_ci_workflow_runs_the_gates(tmp_path):
     new_command("my-cool-plugin", parent_dir=str(tmp_path))
     ci = (tmp_path / "my-cool-plugin" / ".github" / "workflows" / "ci.yml").read_text()
+    assert "uv sync --frozen" in ci
+    assert "uv run pytest" in ci
     assert "catlico-plugin validate ." in ci
-    assert "ruff check ." in ci
-    assert "pytest" in ci
 
 
 def test_new_command_manifest_round_trips_clean(tmp_path):
@@ -176,22 +176,18 @@ def test_new_command_manifest_round_trips_clean(tmp_path):
     manifest = load_manifest(manifest_path)
 
     assert manifest["id"] == "my-cool-plugin"
-    assert manifest["entrypoint"] == "my_cool_plugin_plugin.plugin:MyCoolPluginPlugin"
+    assert manifest["entrypoint"] == "main:catlico"
     assert set(manifest["permissions"]) <= PERMISSIONS
     assert validate_manifest(manifest) == []
     assert manifest_warnings(manifest) == []
 
 
-def test_new_command_default_id_manifest_round_trips_clean():
-    # Also exercise the non-hyphenated (abuseipdb-shaped) id path.
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as d:
-        new_command("simpleid", parent_dir=d)
-        manifest = load_manifest(Path(d) / "simpleid" / "catlico-plugin.toml")
-        assert manifest["entrypoint"] == "simpleid_plugin.plugin:SimpleidPlugin"
-        assert validate_manifest(manifest) == []
-        assert manifest_warnings(manifest) == []
+def test_new_command_main_py_wires_the_app(tmp_path):
+    new_command("my-cool-plugin", parent_dir=str(tmp_path))
+    main_py = (tmp_path / "my-cool-plugin" / "main.py").read_text()
+    assert "catlico = Catlico()" in main_py
+    assert '@catlico.event("observable.created")' in main_py
+    assert "from my_cool_plugin_plugin import plugin" in main_py
 
 
 def test_new_command_refuses_nonempty_existing_dir(tmp_path):
@@ -203,7 +199,6 @@ def test_new_command_refuses_nonempty_existing_dir(tmp_path):
     code = new_command("taken", parent_dir=str(tmp_path), out=out)
     assert code == 1
     assert "already exists" in out.getvalue()
-    # Original file untouched, no scaffold files written alongside it.
     assert (target / "existing.txt").read_text() == "hi"
     assert not (target / "catlico-plugin.toml").exists()
 
@@ -217,25 +212,6 @@ def test_new_command_allows_empty_existing_dir(tmp_path):
     assert (target / "catlico-plugin.toml").is_file()
 
 
-def test_new_command_class_override(tmp_path):
-    new_command(
-        "my-cool-plugin", parent_dir=str(tmp_path), class_name="TotallyCustomPlugin"
-    )
-    manifest_path = tmp_path / "my-cool-plugin" / "catlico-plugin.toml"
-    manifest = load_manifest(manifest_path)
-    assert manifest["entrypoint"] == "my_cool_plugin_plugin.plugin:TotallyCustomPlugin"
-
-    plugin_py = (
-        tmp_path / "my-cool-plugin" / "src" / "my_cool_plugin_plugin" / "plugin.py"
-    ).read_text()
-    assert "class TotallyCustomPlugin(CatlicoPlugin):" in plugin_py
-
-    init_py = (
-        tmp_path / "my-cool-plugin" / "src" / "my_cool_plugin_plugin" / "__init__.py"
-    ).read_text()
-    assert "TotallyCustomPlugin" in init_py
-
-
 def test_new_command_name_override_flows_into_manifest(tmp_path):
     new_command("my-cool-plugin", parent_dir=str(tmp_path), name="My Cool Plugin")
     manifest_path = tmp_path / "my-cool-plugin" / "catlico-plugin.toml"
@@ -246,6 +222,7 @@ def test_new_command_name_override_flows_into_manifest(tmp_path):
 def _parse_generated_sources(plugin_dir: Path, package: str) -> None:
     """ast.parse every generated .py so a splicing bug is a hard failure."""
     for rel in (
+        "main.py",
         f"src/{package}/plugin.py",
         f"src/{package}/__init__.py",
         "tests/test_plugin.py",
@@ -254,15 +231,12 @@ def _parse_generated_sources(plugin_dir: Path, package: str) -> None:
 
 
 def test_new_command_generated_sources_are_parseable(tmp_path):
-    # Belt-and-suspenders even on the happy path: the generated Python must parse.
     code = new_command("my-cool-plugin", parent_dir=str(tmp_path))
     assert code == 0
     _parse_generated_sources(tmp_path / "my-cool-plugin", "my_cool_plugin_plugin")
 
 
 def test_new_command_name_with_quotes_produces_parseable_source(tmp_path):
-    # A display name with a double quote must not break the generated plugin.py —
-    # display_name is embedded via repr, not spliced raw.
     out = io.StringIO()
     code = new_command(
         "my-cool-plugin",
@@ -273,35 +247,12 @@ def test_new_command_name_with_quotes_produces_parseable_source(tmp_path):
     assert code == 0
     plugin_dir = tmp_path / "my-cool-plugin"
     _parse_generated_sources(plugin_dir, "my_cool_plugin_plugin")
-    # And the manifest still round-trips (TOML string escaping holds too).
     manifest = load_manifest(plugin_dir / "catlico-plugin.toml")
     assert manifest["name"] == 'My "Cool" Plugin'
     assert validate_manifest(manifest) == []
 
 
-def test_new_command_rejects_invalid_class(tmp_path):
-    out = io.StringIO()
-    code = new_command(
-        "my-cool-plugin", parent_dir=str(tmp_path), class_name="123 Not Valid!", out=out
-    )
-    assert code == 1
-    assert "invalid class name" in out.getvalue()
-    # Nothing written on the failed run.
-    assert not (tmp_path / "my-cool-plugin").exists()
-
-
-def test_new_command_rejects_keyword_class(tmp_path):
-    out = io.StringIO()
-    code = new_command(
-        "my-cool-plugin", parent_dir=str(tmp_path), class_name="class", out=out
-    )
-    assert code == 1
-    assert "invalid class name" in out.getvalue()
-
-
 def test_new_command_target_exists_as_file(tmp_path):
-    # A regular file at the target path must be a clean exit 1, not a traceback
-    # from iterdir() raising NotADirectoryError.
     (tmp_path / "taken").write_text("i am a file")
     out = io.StringIO()
     code = new_command("taken", parent_dir=str(tmp_path), out=out)
@@ -311,8 +262,8 @@ def test_new_command_target_exists_as_file(tmp_path):
 
 
 def test_new_command_scaffolded_plugin_is_importable_and_runnable(tmp_path):
-    """The generated plugin.py actually subclasses CatlicoPlugin correctly and
-    process() runs against a FakeContext — not just that the files exist."""
+    """The generated plugin.py exposes a runnable process() against a FakeContext —
+    not just that the files exist."""
     import sys
 
     new_command("scaffold-check", parent_dir=str(tmp_path))
@@ -320,14 +271,13 @@ def test_new_command_scaffolded_plugin_is_importable_and_runnable(tmp_path):
     src = str(plugin_dir / "src")
     sys.path.insert(0, src)
     try:
-        module = __import__("scaffold_check_plugin.plugin", fromlist=["ScaffoldCheckPlugin"])
-        plugin_cls = module.ScaffoldCheckPlugin
+        module = __import__("scaffold_check_plugin.plugin", fromlist=["process"])
         from catlico_plugin_sdk.testing import FakeContext, observable_event
 
         ctx = FakeContext(permissions={"read:observable", "write:observable_enrichment"})
         import asyncio
 
-        asyncio.run(plugin_cls().process(observable_event(data="1.2.3.4"), ctx))
+        asyncio.run(module.process(observable_event(data="1.2.3.4"), ctx))
         assert ctx.results
         assert ctx.results[0]["source"] == "scaffold-check"
     finally:
@@ -390,7 +340,6 @@ def test_run_command_success(tmp_path):
     assert "status: success" in text
     assert "results (1)" in text
     assert "progress (1)" in text
-    # default config from the manifest ("hello") flows into the enrichment.
     assert "hello 1.2.3.4" in text
 
 
@@ -405,6 +354,7 @@ def test_run_command_config_override(tmp_path):
 
 
 def test_run_command_skips_non_ip(tmp_path):
+    # The demo app's event handler carries an ip-only matcher, so a domain skips.
     event = _write_event(tmp_path, {"observable_type": "domain", "data": "x.com"})
     out = io.StringIO()
     code = run_command(str(FIXTURE), event, out=out)
@@ -438,7 +388,7 @@ def test_validate_command_warns_but_succeeds(tmp_path):
     out = io.StringIO()
     code = validate_command(str(plugin_dir), out=out)
     text = out.getvalue()
-    assert code == 0  # unrecognised type does not fail validation
+    assert code == 0
     assert "warning" in text
     assert "unrecognised type 'weird'" in text
     assert "valid" in text
@@ -455,17 +405,22 @@ def test_run_command_succeeds_with_secret_type(tmp_path):
     assert "status: success" in out.getvalue()
 
 
-def test_run_command_succeeds_despite_unrecognised_type(tmp_path):
-    plugin_dir = _fixture_copy_with_config(
-        tmp_path, '[[configuration]]\nname = "odd"\ntype = "weird"\n'
+def test_run_command_trigger_mismatch_is_error(tmp_path):
+    """The CLI enforces the same strict triggers==handlers equality as the worker:
+    a manifest trigger with no matching @catlico.event handler fails the run."""
+    plugin_dir = tmp_path / "plugin"
+    shutil.copytree(FIXTURE, plugin_dir)
+    manifest = plugin_dir / "catlico-plugin.toml"
+    text = manifest.read_text().replace(
+        'triggers = ["observable.created"]',
+        'triggers = ["observable.created", "case.created"]',
     )
+    manifest.write_text(text)
     event = _write_event(tmp_path, {"observable_type": "ip", "data": "1.2.3.4"})
     out = io.StringIO()
     code = run_command(str(plugin_dir), event, out=out)
-    text = out.getvalue()
-    assert code == 0  # a warning must never abort the run
-    assert "warning" in text
-    assert "status: success" in text
+    assert code == 1
+    assert "do not match registered" in out.getvalue()
 
 
 def test_run_command_malformed_manifest(tmp_path):
@@ -504,13 +459,13 @@ def test_run_command_missing_config_file(tmp_path):
 # the sibling repos are not checked out, so the SDK stays independently testable.
 
 
-def test_permissions_match_runner_installer():
-    installer = REPO_ROOT / "catlico-plugin-runner" / "plugin_runner" / "installer.py"
-    if not installer.is_file():
+def test_permissions_match_runner_registry():
+    registry = REPO_ROOT / "catlico-plugin-runner" / "plugin_runner" / "registry.py"
+    if not registry.is_file():
         pytest.skip("catlico-plugin-runner not present in this checkout")
-    allowed = _literal_assignment(installer, "_ALLOWED_PERMISSIONS")
+    allowed = _literal_assignment(registry, "_ALLOWED_PERMISSIONS")
     assert set(PERMISSIONS) == set(allowed), (
-        "manifest.PERMISSIONS has drifted from the runner installer's "
+        "manifest.PERMISSIONS has drifted from the runner registry's "
         "_ALLOWED_PERMISSIONS"
     )
 
@@ -536,8 +491,6 @@ def test_runtime_gated_permissions_are_known_to_the_sdk():
 
 
 def _literal_assignment(path: Path, name: str):
-    """Extract a module-level literal assignment (e.g. a set of strings) via AST,
-    without importing the sibling package (it may not be installed here)."""
     tree = ast.parse(path.read_text())
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and any(
@@ -548,7 +501,6 @@ def _literal_assignment(path: Path, name: str):
 
 
 def _gated_permissions(path: Path) -> set[str]:
-    """All permission strings passed to _require()/_require_any() in a module."""
     tree = ast.parse(path.read_text())
     found: set[str] = set()
     for node in ast.walk(tree):

@@ -7,9 +7,9 @@ part of the SDK repo, from the SDK repo root (``uv run pytest``). Uses only
 import pytest
 
 from catlico_plugin_sdk.plugin import ConfigError, InputError
-from catlico_plugin_sdk.testing import FakeContext, observable_event
+from catlico_plugin_sdk.testing import FakeContext, observable_event, run_app
 
-from defang_annotator_plugin.plugin import DefangAnnotatorPlugin, defang, private_range_note
+from defang_annotator_plugin.plugin import defang, health, private_range_note, process
 
 PERMISSIONS = {"read:observable", "write:observable_enrichment"}
 
@@ -20,7 +20,7 @@ def _ctx(**kw) -> FakeContext:
 
 async def test_defangs_an_ip_with_default_bracket_style():
     ctx = _ctx()
-    await DefangAnnotatorPlugin().process(observable_event(data="8.8.8.8"), ctx)
+    await process(observable_event(data="8.8.8.8"), ctx)
 
     assert ctx.results[0]["source"] == "Defang Annotator"
     assert ctx.results[0]["data"]["defanged"] == "8[.]8[.]8[.]8"
@@ -30,7 +30,7 @@ async def test_defangs_an_ip_with_default_bracket_style():
 
 async def test_flags_a_private_ip_range():
     ctx = _ctx()
-    await DefangAnnotatorPlugin().process(observable_event(data="192.168.1.1"), ctx)
+    await process(observable_event(data="192.168.1.1"), ctx)
 
     notes = ctx.results[0]["data"]["notes"]
     assert notes == ["private (RFC1918/RFC4193) address"]
@@ -39,7 +39,7 @@ async def test_flags_a_private_ip_range():
 
 async def test_annotate_private_ranges_config_can_be_disabled():
     ctx = _ctx(config={"annotate_private_ranges": False})
-    await DefangAnnotatorPlugin().process(observable_event(data="10.0.0.1"), ctx)
+    await process(observable_event(data="10.0.0.1"), ctx)
 
     assert ctx.results[0]["data"]["notes"] == []
 
@@ -49,7 +49,7 @@ async def test_hxxp_style_defangs_the_scheme_and_dots():
     event = observable_event(
         observable_type="url", data="https://evil.example/payload"
     )
-    await DefangAnnotatorPlugin().process(event, ctx)
+    await process(event, ctx)
 
     assert ctx.results[0]["data"]["defanged"] == "hxxps://evil[.]example/payload"
 
@@ -57,7 +57,7 @@ async def test_hxxp_style_defangs_the_scheme_and_dots():
 async def test_domain_is_defanged_and_not_annotated_as_private():
     ctx = _ctx()
     event = observable_event(observable_type="domain", data="example.com")
-    await DefangAnnotatorPlugin().process(event, ctx)
+    await process(event, ctx)
 
     assert ctx.results[0]["data"]["defanged"] == "example[.]com"
     assert ctx.results[0]["data"]["notes"] == []
@@ -66,25 +66,45 @@ async def test_domain_is_defanged_and_not_annotated_as_private():
 async def test_empty_value_raises_input_error():
     ctx = _ctx()
     with pytest.raises(InputError):
-        await DefangAnnotatorPlugin().process(observable_event(data=""), ctx)
+        await process(observable_event(data=""), ctx)
 
 
 async def test_unknown_style_raises_config_error():
     ctx = _ctx(config={"style": "leetspeak"})
     with pytest.raises(ConfigError):
-        await DefangAnnotatorPlugin().process(observable_event(data="1.2.3.4"), ctx)
-
-
-async def test_should_process_ignores_unsupported_observable_types():
-    ctx = _ctx()
-    event = observable_event(observable_type="hash", data="deadbeef")
-    assert await DefangAnnotatorPlugin().should_process(event, ctx) is False
+        await process(observable_event(data="1.2.3.4"), ctx)
 
 
 async def test_health_rejects_a_bad_style_override():
     ctx = _ctx(config={"style": "leetspeak"})
     with pytest.raises(ConfigError):
-        await DefangAnnotatorPlugin().health(ctx)
+        await health(ctx)
+
+
+# --- End-to-end through the app (matchers + dispatch), via run_app ----------
+
+
+async def test_app_skips_unsupported_observable_types():
+    """The matcher on the event handler filters out types we can't defang, so the
+    whole run is 'skipped' with no enrichment written."""
+    from main import catlico
+
+    ctx = _ctx()
+    event = observable_event(observable_type="hash", data="deadbeef")
+    result = await run_app(catlico, event, ctx)
+
+    assert result["status"] == "skipped"
+    assert ctx.results == []
+
+
+async def test_app_dispatches_supported_type_to_success():
+    from main import catlico
+
+    ctx = _ctx()
+    result = await run_app(catlico, observable_event(data="8.8.8.8"), ctx)
+
+    assert result["status"] == "success"
+    assert ctx.results[0]["data"]["defanged"] == "8[.]8[.]8[.]8"
 
 
 # --- Unit coverage of the pure helpers (no ctx needed) -----------------------

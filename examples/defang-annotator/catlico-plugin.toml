@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Defang an IP/domain/URL observable for safe reporting and flag private/reserved IP ranges. Fully offline — no vendor calls, no secrets."
 sdk = ">=0.1,<1"
 runtime = "python"
-entrypoint = "defang_annotator_plugin.plugin:DefangAnnotatorPlugin"
+entrypoint = "main:catlico"
 capabilities = ["enrichment"]
 triggers = ["observable.created"]
 permissions = ["read:observable", "write:observable_enrichment"]

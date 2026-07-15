@@ -1,7 +1,7 @@
 id = "demo"
 name = "Demo"
 version = "0.1.0"
-entrypoint = "demo_plugin.plugin:DemoPlugin"
+entrypoint = "main:catlico"
 capabilities = ["enrichment"]
 triggers = ["observable.created"]
 permissions = ["read:observable", "write:observable_enrichment"]

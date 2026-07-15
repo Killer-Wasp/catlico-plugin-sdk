@@ -1,14 +1,15 @@
 """Tests for the plugin author test kit (``catlico_plugin_sdk.testing``).
 
-Covers the acceptance criteria: a plugin can exercise ``should_process`` /
-``process``, assert on emitted results, provoke and detect permission failures,
-use the file helpers, record progress, and drive error classification — all with
-no live Catlico API or runner.
+Covers the acceptance criteria: a plugin's logic functions can assert on emitted
+results, provoke and detect permission failures, use the file helpers, record
+progress, and drive error classification — all with no live Catlico API or
+runner. The sample logic here is written as plain async functions/objects (the
+decorator app itself is covered in ``test_app.py``).
 """
 import httpx
 import pytest
 
-from catlico_plugin_sdk import CatlicoPlugin, ConfigError, TransientError
+from catlico_plugin_sdk import ConfigError, TransientError
 from catlico_plugin_sdk.plugin import InputError
 from catlico_plugin_sdk.testing import (
     FakeCatlicoApi,
@@ -27,9 +28,7 @@ MANIFEST = {
 }
 
 
-class EnrichingPlugin(CatlicoPlugin):
-    triggers = ["observable.created"]
-
+class EnrichingPlugin:
     async def should_process(self, event, ctx) -> bool:
         return event.data.get("observable_type") == "ip"
 
@@ -82,7 +81,7 @@ async def test_process_emits_result_and_progress():
 # --- Permission enforcement (calls outside declared manifest permissions) ---
 
 
-class OverreachingPlugin(CatlicoPlugin):
+class OverreachingPlugin:
     async def process(self, event, ctx) -> None:
         # Requests read:case, which the manifest never declared.
         await ctx.api.get_case(1)
