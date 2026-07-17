@@ -8,6 +8,12 @@ manifest did not declare fails, exactly as the runtime returns 403. Emitted
 results, uploaded files, and progress updates are recorded so tests can assert on
 them.
 
+Recorded writes must also be **JSON-serializable**, because the runtime ships them
+to the API as an httpx ``json=`` body: a plugin that emits a ``datetime`` or a
+vendor SDK object (say a geoip2 ``IPv4Address``) fails its run in production, so
+the fake raises ``TypeError`` for it here rather than storing the live object and
+letting the test pass. ``upload_file`` is exempt — it posts bytes as multipart.
+
 Typical use::
 
     from catlico_plugin_sdk.testing import FakeContext, observable_event, fake_http
@@ -24,6 +30,7 @@ Typical use::
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from typing import Any, Callable
 
@@ -50,6 +57,55 @@ class PermissionDenied(RuntimeError):
             f"{method} requires plugin permission {want}, "
             "which the manifest does not declare"
         )
+
+
+#: Types the stdlib JSON encoder accepts as leaves (and as dict keys).
+_JSON_SCALARS = (str, int, float, bool, type(None))
+
+
+def _locate_unserializable(value: Any, path: str = "") -> tuple[str, Any] | None:
+    """Path and value of the first item the JSON encoder would reject, if any.
+
+    Only walked to explain a ``TypeError`` ``json.dumps`` already raised, so the
+    happy path stays a single encode.
+    """
+    if isinstance(value, _JSON_SCALARS):
+        return None
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, _JSON_SCALARS):
+                return (path, key)
+            found = _locate_unserializable(item, f"{path}.{key}")
+            if found is not None:
+                return found
+        return None
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            found = _locate_unserializable(item, f"{path}[{index}]")
+            if found is not None:
+                return found
+        return None
+    return (path, value)
+
+
+def _assert_json_serializable(what: str, payload: Any) -> None:
+    """Reject a payload the real API boundary could not encode.
+
+    Every runtime write is shipped to Catlico as an httpx ``json=`` body, so a
+    value the stdlib encoder cannot handle — a ``datetime``, an ``IPv4Address``, a
+    vendor SDK object — raises ``TypeError`` there and fails the run. The fake
+    records into a plain list, which would happily hold such a value and let a
+    green test ship a plugin that dies on its first real call; encoding here keeps
+    the fake honest to that contract, and names the offending field.
+    """
+    try:
+        json.dumps(payload)
+    except TypeError as exc:
+        found = _locate_unserializable(payload)
+        if found is None:  # pragma: no cover - encoder and walker disagree
+            raise
+        path, value = found
+        raise TypeError(f"{exc} — at {what}{path} = {value!r}") from None
 
 
 class FakeCatlicoApi:
@@ -153,6 +209,7 @@ class FakeCatlicoApi:
         for field in ("entity_type", "entity_id", "fingerprint"):
             if not body.get(field):
                 raise ValueError(f"add_result requires '{field}'")
+        _assert_json_serializable("add_result", body)
         fingerprint = body["fingerprint"]
         existing = self._result_ids.get(fingerprint)
         if existing is not None:
@@ -167,6 +224,9 @@ class FakeCatlicoApi:
         self, observable_id: str, *, source: str, data: dict, **body
     ) -> dict:
         self._require("add_observable_enrichment", "write:observable_enrichment")
+        _assert_json_serializable(
+            "add_observable_enrichment", {"source": source, "data": data, **body}
+        )
         record = {
             "kind": "enrichment",
             "observable_id": observable_id,
@@ -194,6 +254,7 @@ class FakeCatlicoApi:
     def _propose(
         self, action_type: str, entity_type: str, entity_id: Any, payload: dict
     ) -> dict:
+        _assert_json_serializable(action_type, payload)
         action = {
             "kind": "proposed_action",
             "action_type": action_type,
@@ -211,6 +272,7 @@ class FakeCatlicoApi:
 
     async def progress(self, message: str, percent: int | None = None) -> dict:
         record = {"message": message, "percent": percent}
+        _assert_json_serializable("progress", record)
         self.progress_updates.append(record)
         return record
 

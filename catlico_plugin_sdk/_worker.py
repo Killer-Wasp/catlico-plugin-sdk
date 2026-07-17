@@ -135,6 +135,36 @@ async def _run(request: dict) -> dict:
             await ctx.http.aclose()
 
 
+def _write_result(result_path: str, result: dict) -> None:
+    """Write the run result, degrading to a serializable failure if it won't encode.
+
+    The result carries plugin-authored values — a health check's return dict, a
+    ``SkipRun`` reason — so encoding can fail on a live object (a ``datetime``, a
+    vendor SDK type). Letting that escape is the worst outcome available: the
+    result file ends up absent or half-written, and ``Executor._read_result``
+    treats both the same, reporting the useless "plugin process produced no
+    result" while the real error survives only in the log tail. Reporting the
+    encoding failure *as* the run's error keeps the diagnosis in the run record.
+
+    Encoding fully before opening the file is what makes that guarantee hold: a
+    failure mid-``json.dump`` would leave truncated JSON the runner cannot parse.
+    """
+    try:
+        payload = json.dumps(result)
+    except (TypeError, ValueError) as exc:  # unserializable value, or circular ref
+        traceback.print_exc()
+        payload = json.dumps(
+            {
+                "run_id": str(result.get("run_id", "")),
+                "status": "failure",
+                "error": f"plugin result is not JSON-serializable: {type(exc).__name__}: {exc}",
+                "error_kind": "bug",
+            }
+        )
+    with open(result_path, "w") as fh:
+        fh.write(payload)
+
+
 def main() -> None:
     request = _load_request()
     result_path = request.get("result_path")
@@ -149,8 +179,7 @@ def main() -> None:
             "error_kind": "bug",
         }
     if result_path:
-        with open(result_path, "w") as fh:
-            json.dump(result, fh)
+        _write_result(result_path, result)
 
 
 if __name__ == "__main__":

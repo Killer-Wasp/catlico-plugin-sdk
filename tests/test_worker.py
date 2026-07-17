@@ -8,11 +8,12 @@ subprocess boundary.
 import json
 import sys
 import textwrap
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
-from catlico_plugin_sdk._worker import _load_secrets, _run
+from catlico_plugin_sdk._worker import _load_secrets, _run, _write_result
 
 
 # --- secret resolution -------------------------------------------------------
@@ -136,3 +137,48 @@ async def test_health_action_classifies_failure(tmp_path):
     result = await _run(request)
     assert result["status"] == "failure"
     assert result["error_kind"] == "config"
+
+
+# --- writing the result file -------------------------------------------------
+
+
+def test_write_result_round_trips_a_normal_result(tmp_path):
+    path = tmp_path / "result.json"
+    result = {"run_id": "r1", "status": "success", "health": {"ok": True}}
+    _write_result(str(path), result)
+    assert json.loads(path.read_text()) == result
+
+
+def test_write_result_reports_an_unserializable_result_as_a_failure(tmp_path):
+    # A health check returning a live object used to kill the worker here, leaving
+    # no result file — the runner could then only say "plugin process produced no
+    # result", losing the real cause. The run must carry the diagnosis instead.
+    path = tmp_path / "result.json"
+    _write_result(
+        str(path), {"run_id": "r1", "status": "success", "health": {"at": datetime(2026, 7, 17)}}
+    )
+    written = json.loads(path.read_text())
+    assert written["status"] == "failure"
+    assert written["error_kind"] == "bug"
+    assert written["run_id"] == "r1"
+    assert "not JSON-serializable" in written["error"]
+    assert "datetime" in written["error"]
+
+
+def test_write_result_survives_a_circular_result(tmp_path):
+    path = tmp_path / "result.json"
+    circular: dict = {"run_id": "r1", "status": "success"}
+    circular["self"] = circular
+    _write_result(str(path), circular)
+    assert json.loads(path.read_text())["status"] == "failure"
+
+
+def test_write_result_never_leaves_partial_json(tmp_path):
+    # The failure must not be encoded straight into the open file: a half-written
+    # result parses no better than a missing one (Executor._read_result treats a
+    # JSONDecodeError and a FileNotFoundError identically).
+    path = tmp_path / "result.json"
+    big = {"run_id": "r1", "status": "success", "pad": ["x" * 500] * 50, "bad": object()}
+    _write_result(str(path), big)
+    written = json.loads(path.read_text())  # parses at all == not truncated
+    assert written["status"] == "failure"

@@ -6,6 +6,9 @@ progress, and drive error classification — all with no live Catlico API or
 runner. The sample logic here is written as plain async functions/objects (the
 decorator app itself is covered in ``test_app.py``).
 """
+from datetime import datetime
+from ipaddress import IPv4Address
+
 import httpx
 import pytest
 
@@ -186,6 +189,65 @@ async def test_upload_file_requires_write_permission():
     ctx = FakeContext(manifest={"permissions": ["read:observable"]})
     with pytest.raises(PermissionDenied):
         await ctx.api.upload_file(b"x", "x.bin")
+
+
+# --- JSON-serializability of recorded writes ---
+
+
+async def test_enrichment_with_unserializable_value_raises_type_error():
+    # The runtime ships this as an httpx json= body, so a live object here fails
+    # the run in production (this is the geoip2 IPv4Address bug the maxmind plugin
+    # shipped with). The fake must not quietly record it.
+    ctx = FakeContext(manifest=MANIFEST)
+    with pytest.raises(TypeError, match="IPv4Address"):
+        await ctx.api.add_observable_enrichment(
+            "obs-1", source="MaxMind", data={"traits": {"ip_address": IPv4Address("1.1.1.1")}}
+        )
+    assert ctx.results == []
+
+
+async def test_unserializable_error_names_the_offending_field():
+    ctx = FakeContext(manifest=MANIFEST)
+    with pytest.raises(TypeError, match=r"data\.taxonomy\[0\]\.seen = datetime"):
+        await ctx.api.add_observable_enrichment(
+            "obs-1", source="X", data={"taxonomy": [{"seen": datetime(2026, 7, 17)}]}
+        )
+
+
+async def test_add_result_rejects_unserializable_body():
+    ctx = FakeContext(manifest={"permissions": ["write:plugin_result"]})
+    with pytest.raises(TypeError, match="set"):
+        await ctx.api.add_result(
+            entity_type="observable",
+            entity_id="obs-1",
+            fingerprint="fp-1",
+            data={"tags": {"a", "b"}},
+        )
+
+
+async def test_proposed_action_rejects_unserializable_payload():
+    ctx = FakeContext(manifest={"permissions": ["write:case"]})
+    with pytest.raises(TypeError, match="datetime"):
+        await ctx.api.propose_case_patch(1, due_date=datetime(2026, 7, 17))
+
+
+async def test_serializable_writes_are_recorded():
+    # The guard must not get in the way of ordinary payloads.
+    ctx = FakeContext(manifest=MANIFEST)
+    await ctx.api.add_observable_enrichment(
+        "obs-1",
+        source="MaxMind",
+        data={"found": True, "score": 1.5, "tags": ["a"], "city": None},
+        verdict="info",
+    )
+    assert ctx.results[0]["data"]["score"] == 1.5
+
+
+async def test_upload_file_is_exempt_from_the_json_guard():
+    # upload_file posts multipart bytes, not a json= body — bytes are expected.
+    ctx = FakeContext(manifest={"permissions": ["write:plugin_result"]})
+    out = await ctx.api.upload_file(b"\x89PNG\r\n", "shot.png", "image/png")
+    assert out["size"] == 6
 
 
 # --- Error classification through ctx.http ---
