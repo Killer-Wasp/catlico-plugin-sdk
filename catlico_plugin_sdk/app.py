@@ -88,20 +88,30 @@ class Catlico:
     # --- Registration (decorators) ---------------------------------------
 
     def event(
-        self, event_type: str, *, matchers: tuple[Matcher, ...] | list[Matcher] = ()
+        self,
+        event_type: str | list[str],
+        *,
+        matchers: tuple[Matcher, ...] | list[Matcher] = (),
     ) -> Callable[[Handler], Handler]:
-        """Register ``fn`` to handle ``event_type``. Returns ``fn`` unchanged.
+        """Register ``fn`` to handle one or more event types. Returns ``fn`` unchanged.
 
-        Multiple handlers may register for the same event; ``dispatch`` runs them
-        in registration order. ``matchers`` are cheap envelope filters (see the
-        module docstring).
+        ``event_type`` is a single event name or a list of them. Pass a list to
+        register a single handler for several events, e.g.
+        ``@catlico.event(["observable.created", "observable.manual"])`` — the one
+        handler runs (with the same ``matchers``) for each. Multiple handlers may
+        also register for the same event; ``dispatch`` runs them in registration
+        order. ``matchers`` are cheap envelope filters (see the module docstring).
         """
+        event_types = [event_type] if isinstance(event_type, str) else list(event_type)
+        if not event_types:
+            raise ValueError("@catlico.event() requires at least one event type")
         registration_matchers = tuple(matchers)
 
         def decorator(fn: Handler) -> Handler:
-            self._handlers.setdefault(event_type, []).append(
-                _Registration(fn, registration_matchers)
-            )
+            for et in event_types:
+                self._handlers.setdefault(et, []).append(
+                    _Registration(fn, registration_matchers)
+                )
             return fn
 
         return decorator

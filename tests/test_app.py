@@ -42,6 +42,29 @@ def test_registered_events_reflects_decorators():
     )
 
 
+def test_one_handler_registers_for_a_list_of_event_types():
+    catlico = Catlico()
+
+    @catlico.event(["observable.created", "observable.manual"])
+    async def handler(event, ctx): ...
+
+    assert catlico.registered_events == frozenset(
+        {"observable.created", "observable.manual"}
+    )
+    # Same handler registered under each type.
+    assert (
+        catlico._handlers["observable.created"][0].handler
+        is catlico._handlers["observable.manual"][0].handler
+    )
+
+
+def test_event_decorator_requires_an_event_type():
+    catlico = Catlico()
+
+    with pytest.raises(ValueError, match="at least one event type"):
+        catlico.event([])
+
+
 def test_second_health_registration_raises():
     catlico = Catlico()
 
